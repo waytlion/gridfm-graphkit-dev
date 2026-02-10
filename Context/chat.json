@@ -1,0 +1,2970 @@
+{
+  "responderUsername": "GitHub Copilot",
+  "initialLocation": "panel",
+  "requests": [
+    {
+      "requestId": "request_bd8b1a2a-33f6-4e50-8e08-aebb00664a92",
+      "message": {
+        "text": "@workspace I want to understand how this codebase works. Please explain:\r\n\r\n1. **High-level architecture**: What are the main components and how do they interact?\r\n2. **Data flow**: How does data move through the system from input to output?\r\n3. **Key abstractions**: What are the core classes/modules and their responsibilities?\r\n4. **Configuration system**: How does `examples/config/HGNS_OPF_datakit_case14.yaml` work?\r\n5. **Entry point**: What happens when I run `cli.py`?\r\n\r\nStart with a high-level overview, then we can dive deeper into specific components.",
+        "parts": [
+          {
+            "range": {
+              "start": 0,
+              "endExclusive": 10
+            },
+            "editorRange": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 1,
+              "endColumn": 11
+            },
+            "agent": {
+              "extensionId": {
+                "value": "GitHub.copilot-chat",
+                "_lower": "github.copilot-chat"
+              },
+              "extensionVersion": "0.37.1",
+              "publisherDisplayName": "GitHub",
+              "extensionPublisherId": "GitHub",
+              "extensionDisplayName": "GitHub Copilot Chat",
+              "id": "github.copilot.workspace",
+              "description": "Ask about your workspace",
+              "when": "!github.copilot.interactiveSession.disabled",
+              "metadata": {
+                "sampleRequest": "How do I build this project?",
+                "themeIcon": {
+                  "id": "code"
+                },
+                "hasFollowups": false,
+                "supportIssueReporting": false
+              },
+              "name": "workspace",
+              "fullName": "Workspace",
+              "locations": [
+                "panel"
+              ],
+              "modes": [
+                "agent",
+                "ask",
+                "edit"
+              ],
+              "slashCommands": [
+                {
+                  "name": "explain",
+                  "description": "Explain how the code in your active editor works"
+                },
+                {
+                  "name": "tests",
+                  "description": "Generate unit tests for the selected code",
+                  "disambiguation": [
+                    {
+                      "category": "create_tests",
+                      "description": "The user wants to generate unit tests.",
+                      "examples": [
+                        "Generate tests for my selection using pytest."
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "name": "fix",
+                  "description": "Propose a fix for the problems in the selected code",
+                  "sampleRequest": "There is a problem in this code. Rewrite the code to show it with the bug fixed."
+                },
+                {
+                  "name": "new",
+                  "description": "Scaffold code for a new file or project in a workspace",
+                  "sampleRequest": "Create a RESTful API server using typescript",
+                  "isSticky": true,
+                  "disambiguation": [
+                    {
+                      "category": "create_new_workspace_or_extension",
+                      "description": "The user wants to create a complete Visual Studio Code workspace from scratch, such as a new application or a Visual Studio Code extension. Use this category only if the question relates to generating or creating new workspaces in Visual Studio Code. Do not use this category for updating existing code or generating sample code snippets",
+                      "examples": [
+                        "Scaffold a Node server.",
+                        "Create a sample project which uses the fileSystemProvider API.",
+                        "react application"
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "name": "newNotebook",
+                  "description": "Create a new Jupyter Notebook",
+                  "sampleRequest": "How do I create a notebook to load data from a csv file?",
+                  "disambiguation": [
+                    {
+                      "category": "create_jupyter_notebook",
+                      "description": "The user wants to create a new Jupyter notebook in Visual Studio Code.",
+                      "examples": [
+                        "Create a notebook to analyze this CSV file."
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "name": "setupTests",
+                  "description": "Set up tests in your project (Experimental)",
+                  "sampleRequest": "add playwright tests to my project",
+                  "when": "config.github.copilot.chat.setupTests.enabled",
+                  "disambiguation": [
+                    {
+                      "category": "set_up_tests",
+                      "description": "The user wants to configure project test setup, framework, or test runner. The user does not want to fix their existing tests.",
+                      "examples": [
+                        "Set up tests for this project."
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "disambiguation": [
+                {
+                  "category": "workspace_project_questions",
+                  "description": "The user wants to learn about or update the code or files in their current workspace. Questions in this category may be about understanding what the whole workspace does or locating the implementation of some code. This does not include generating or updating tests.",
+                  "examples": [
+                    "What does this project do?"
+                  ]
+                },
+                {
+                  "category": "find_code_in_workspace",
+                  "description": "The user wants to locate the implementation of some functionality in their current workspace.",
+                  "examples": [
+                    "Where is the tree widget implemented?"
+                  ]
+                },
+                {
+                  "category": "generate_with_workspace_context",
+                  "description": "The user wants to generate code based on multiple files in the workspace and did not specify which files to reference.",
+                  "examples": [
+                    "Create a README for this project."
+                  ]
+                }
+              ]
+            },
+            "kind": "agent"
+          },
+          {
+            "range": {
+              "start": 10,
+              "endExclusive": 563
+            },
+            "editorRange": {
+              "startLineNumber": 1,
+              "startColumn": 11,
+              "endLineNumber": 9,
+              "endColumn": 84
+            },
+            "text": " I want to understand how this codebase works. Please explain:\r\n\r\n1. **High-level architecture**: What are the main components and how do they interact?\r\n2. **Data flow**: How does data move through the system from input to output?\r\n3. **Key abstractions**: What are the core classes/modules and their responsibilities?\r\n4. **Configuration system**: How does `examples/config/HGNS_OPF_datakit_case14.yaml` work?\r\n5. **Entry point**: What happens when I run `cli.py`?\r\n\r\nStart with a high-level overview, then we can dive deeper into specific components.",
+            "kind": "text"
+          }
+        ]
+      },
+      "variableData": {
+        "variables": []
+      },
+      "response": [
+        {
+          "kind": "mcpServersStarting",
+          "didStartServerIds": []
+        },
+        {
+          "kind": "progressTaskSerialized",
+          "content": {
+            "value": "Collecting workspace information",
+            "uris": {}
+          },
+          "progress": []
+        },
+        {
+          "value": "# gridfm-graphkit Architecture Overview\n\nThis is a **PyTorch Lightning-based framework** for training and evaluating Graph Neural Networks (GNNs) on power grid tasks. Let me break down the architecture:\n\n---\n\n## 1. High-Level Architecture\n\nThe codebase follows a **modular, task-driven design** with these main components:\n\n```\n┌─────────────────────────────────────────────────────────────┐\n│                     CLI Entry Point                          │\n│              (gridfm_graphkit/__main__.py)                   │\n└──────────────────────┬──────────────────────────────────────┘\n                       │\n                       ▼\n┌─────────────────────────────────────────────────────────────┐\n│                   Main Pipeline (cli.py)                     │\n│  - Loads config YAML                                         │\n│  - Initializes DataModule                                    │\n│  - Creates Task (model + training logic)                     │\n│  - Runs PyTorch Lightning Trainer                            │\n└──────────────────────┬──────────────────────────────────────┘\n                       │\n         ┌─────────────┼─────────────┐\n         ▼             ▼             ▼\n    ┌────────┐   ┌─────────┐   ┌─────────┐\n    │  DATA  │   │  MODEL  │   │  TASK   │\n    └────────┘   └─────────┘   └─────────┘\n```\n\n### Core Components:\n\n1. **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "name": "gridfm_graphkit/datasets",
+          "inlineReference": {
+            "$mid": 1,
+            "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\",
+            "_sep": 1,
+            "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/",
+            "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/",
+            "scheme": "file"
+          }
+        },
+        {
+          "value": "** - Data loading, preprocessing, normalization\n2. **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "name": "gridfm_graphkit/models",
+          "inlineReference": {
+            "$mid": 1,
+            "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\models\\",
+            "_sep": 1,
+            "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/models/",
+            "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/models/",
+            "scheme": "file"
+          }
+        },
+        {
+          "value": "** - GNN architectures (heterogeneous graph models)\n3. **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "name": "gridfm_graphkit/tasks",
+          "inlineReference": {
+            "$mid": 1,
+            "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\",
+            "_sep": 1,
+            "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/",
+            "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/",
+            "scheme": "file"
+          }
+        },
+        {
+          "value": "** - Task-specific training/evaluation logic\n4. **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "name": "gridfm_graphkit/training",
+          "inlineReference": {
+            "$mid": 1,
+            "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\training\\",
+            "_sep": 1,
+            "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/training/",
+            "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/training/",
+            "scheme": "file"
+          }
+        },
+        {
+          "value": "** - Loss functions, callbacks\n5. **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "name": "gridfm_graphkit/io",
+          "inlineReference": {
+            "$mid": 1,
+            "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\io\\",
+            "_sep": 1,
+            "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/io/",
+            "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/io/",
+            "scheme": "file"
+          }
+        },
+        {
+          "value": "** - Registries and parameter handling\n\n---\n\n## 2. Data Flow\n\n```\nRaw Data (Disk)\n    │\n    ▼\n┌──────────────────────────────────────────────┐\n│  HeteroGridDatasetDisk                       │\n│  - Loads graph data from disk                │\n│  - Applies normalization                     │\n│  - Returns HeteroData objects                │\n└──────────────────┬───────────────────────────┘\n                   │\n                   ▼\n┌──────────────────────────────────────────────┐\n│  LitGridHeteroDataModule                     │\n│  - Splits into train/val/test                │\n│  - Creates DataLoaders                       │\n└──────────────────┬───────────────────────────┘\n                   │\n                   ▼\n┌──────────────────────────────────────────────┐\n│  Task (e.g., PowerFlowTask)                  │\n│  - training_step: Forward pass + loss        │\n│  - validation_step: Metrics                  │\n│  - test_step: Detailed evaluation            │\n└──────────────────┬───────────────────────────┘\n                   │\n                   ▼\n┌──────────────────────────────────────────────┐\n│  Model (e.g., GNS_heterogeneous)             │\n│  - GNN forward pass                          │\n│  - Physics decoder (optional)                │\n└──────────────────────────────────────────────┘\n```\n\n**Example batch flow:**\n1. ",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "HeteroGridDatasetDisk",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 14,
+                "startColumn": 7,
+                "endLineNumber": 14,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\powergrid_hetero_dataset.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/powergrid_hetero_dataset.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/powergrid_hetero_dataset.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "103c2506-28b7-4d28-8a7d-9a4e0183b112"
+        },
+        {
+          "value": " loads a scenario from disk\n2. Task-specific transforms (e.g., ",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "PowerFlowTransforms",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 17,
+                "startColumn": 7,
+                "endLineNumber": 17,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\task_transforms.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/task_transforms.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/task_transforms.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "85e4d687-3c71-4bfe-8c43-d7da069a60f5"
+        },
+        {
+          "value": ") apply masking\n3. DataLoader batches graphs → ",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "PowerFlowTask.training_step",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 35,
+                "startColumn": 7,
+                "endLineNumber": 35,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\pf_task.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/pf_task.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/pf_task.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "4a75e529-6223-4d7d-8332-fa5212e6517f"
+        },
+        {
+          "value": "\n4. Model predicts bus/generator features → Loss computed → Backprop\n\n---\n\n## 3. Key Abstractions\n\n### **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "BaseTask",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 10,
+                "startColumn": 7,
+                "endLineNumber": 10,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\base_task.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/base_task.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/base_task.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "99d79ecf-59fa-4ab5-9cec-7428174a96f4"
+        },
+        {
+          "value": "** (Abstract Base)\n```python\nclass BaseTask(L.LightningModule):\n    \"\"\"Defines training/validation/test logic\"\"\"\n    def training_step(self, batch): ...\n    def validation_step(self, batch): ...\n    def test_step(self, batch): ...\n```\n\n**Task Hierarchy:**\n- [`BaseTask",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "](gridfm_graphkit/tasks/base_task.py) → [",
+            "kind": 12,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 1,
+                "startColumn": 1,
+                "endLineNumber": 1,
+                "endColumn": 1
+              },
+              "uri": {
+                "$mid": 1,
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/__init__.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "ee0b9a6b-55c2-44a0-860d-b42ea38a48d5"
+        },
+        {
+          "value": "ReconstructionTask`](gridfm_graphkit/tasks/reconstruction_tasks.py) → **Concrete Tasks**:\n  - ",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "PowerFlowTask",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 35,
+                "startColumn": 7,
+                "endLineNumber": 35,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\pf_task.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/pf_task.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/pf_task.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "310b42b1-c9e1-4bdb-bf5b-018b5f143415"
+        },
+        {
+          "value": " - Predicts voltage/power from masked inputs\n  - ",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "OptimalPowerFlowTask",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 49,
+                "startColumn": 7,
+                "endLineNumber": 49,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\opf_task.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "43bbc182-0e5c-41a6-b24a-46cbacfd9e89"
+        },
+        {
+          "value": " - Solves OPF problem\n  - ",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "StateEstimationTask",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 28,
+                "startColumn": 7,
+                "endLineNumber": 28,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\se_task.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/se_task.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/se_task.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "571bf436-ae7d-4673-abb1-a09198d9ec30"
+        },
+        {
+          "value": " - Estimates state from noisy measurements\n\n### **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "LitGridHeteroDataModule",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 23,
+                "startColumn": 7,
+                "endLineNumber": 23,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\hetero_powergrid_datamodule.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/hetero_powergrid_datamodule.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/hetero_powergrid_datamodule.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "d2d3dd2d-456e-41d0-bfc9-93c90a199132"
+        },
+        {
+          "value": "**\n```python\nclass LitGridHeteroDataModule(L.LightningDataModule):\n    \"\"\"Handles data loading/splitting for multiple networks\"\"\"\n    def setup(self, stage: str):\n        # Load datasets, split train/val/test\n    def train_dataloader(self): ...\n```\n\n### **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "HeteroGridDatasetDisk",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 14,
+                "startColumn": 7,
+                "endLineNumber": 14,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\powergrid_hetero_dataset.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/powergrid_hetero_dataset.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/powergrid_hetero_dataset.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "adcd64c3-93df-4168-8028-9206d607d3df"
+        },
+        {
+          "value": "**\n```python\nclass HeteroGridDatasetDisk(Dataset):\n    \"\"\"Loads pre-processed graph data from disk\"\"\"\n    def __getitem__(self, idx) -> HeteroData:\n        # Returns heterogeneous graph with bus/gen/branch edges\n```\n\n### **Model Architecture**\n- ",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "GNS_heterogeneous",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 30,
+                "startColumn": 7,
+                "endLineNumber": 30,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\models\\gnn_heterogeneous_gns.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/models/gnn_heterogeneous_gns.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/models/gnn_heterogeneous_gns.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "0d414b81-e7fa-4c2f-b11f-823c4a236e99"
+        },
+        {
+          "value": " - Message-passing GNN for heterogeneous graphs\n- Physics decoders (e.g., ",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "PhysicsDecoderPF",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 117,
+                "startColumn": 7,
+                "endLineNumber": 117,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\models\\utils.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/models/utils.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/models/utils.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "21a7e9ea-1881-4af2-97ee-d12f9426cd11"
+        },
+        {
+          "value": ") - Enforce power flow equations\n\n---\n\n## 4. Configuration System (",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "name": "examples/config/HGNS_OPF_datakit_case14.yaml",
+          "inlineReference": {
+            "$mid": 1,
+            "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_OPF_datakit_case14.yaml",
+            "_sep": 1,
+            "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case14.yaml",
+            "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case14.yaml",
+            "scheme": "file"
+          }
+        },
+        {
+          "value": ")\n\nThe YAML config drives **all** experiment parameters:\n\n```yaml\ntask:\n  task_name: OptimalPowerFlow  # Selects OptimalPowerFlowTask\n\ndata:\n  networks: [case14_ieee]      # Which power system to use\n  scenarios: [250000]          # Number of samples\n  normalization: HeteroDataMVANormalizer\n  test_ratio: 0.1              # Train/val/test splits\n\nmodel:\n  type: GNS_heterogeneous      # Model architecture\n  hidden_size: 48\n  num_layers: 12\n\ntraining:\n  batch_size: 64\n  epochs: 200\n  losses: [LayeredWeightedPhysics, MaskedGenMSE, MaskedBusMSE]\n```\n\n**How it's parsed:**\n1. [`main_cli",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "](gridfm_graphkit/cli.py) loads YAML → ",
+            "kind": 12,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 1,
+                "startColumn": 1,
+                "endLineNumber": 1,
+                "endColumn": 1
+              },
+              "uri": {
+                "$mid": 1,
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/__init__.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "7abd9c4f-2ee4-4ed1-bd06-dec5c7314d5f"
+        },
+        {
+          "value": "yaml.safe_load()`\n2. Converts to [`NestedNamespace",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "](gridfm_graphkit/io/param_handler.py) (allows ",
+            "kind": 12,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 1,
+                "startColumn": 1,
+                "endLineNumber": 1,
+                "endColumn": 1
+              },
+              "uri": {
+                "$mid": 1,
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/__init__.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "9affe220-6270-419a-9f5c-cbc4fdbf1619"
+        },
+        {
+          "value": "args.data.networks`)\n3. Parameter handlers instantiate components:\n   - [`get_task(args)",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "](gridfm_graphkit/io/param_handler.py) → Creates [",
+            "kind": 12,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 1,
+                "startColumn": 1,
+                "endLineNumber": 1,
+                "endColumn": 1
+              },
+              "uri": {
+                "$mid": 1,
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/__init__.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "c160f45d-6034-4110-a28b-2cc7be1da0d4"
+        },
+        {
+          "value": "OptimalPowerFlowTask`](gridfm_graphkit/tasks/opf_task.py)\n   - [`load_model(args)",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "](gridfm_graphkit/io/param_handler.py) → Creates [",
+            "kind": 12,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 1,
+                "startColumn": 1,
+                "endLineNumber": 1,
+                "endColumn": 1
+              },
+              "uri": {
+                "$mid": 1,
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/__init__.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "bc0d589e-b356-4863-8a1c-6dd9c235f424"
+        },
+        {
+          "value": "GNS_heterogeneous`](gridfm_graphkit/models/gnn_heterogeneous_gns.py)\n   - [`get_task_transforms(args)",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "](gridfm_graphkit/io/param_handler.py) → Creates [",
+            "kind": 12,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 1,
+                "startColumn": 1,
+                "endLineNumber": 1,
+                "endColumn": 1
+              },
+              "uri": {
+                "$mid": 1,
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/__init__.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "8c9014b7-c701-45e5-9152-b2c3f2862e10"
+        },
+        {
+          "value": "OptimalPowerFlowTransforms`](gridfm_graphkit/datasets/task_transforms.py)\n\n---\n\n## 5. Entry Point: ",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "name": "gridfm_graphkit/cli.py",
+          "inlineReference": {
+            "$mid": 1,
+            "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\cli.py",
+            "_sep": 1,
+            "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/cli.py",
+            "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/cli.py",
+            "scheme": "file"
+          }
+        },
+        {
+          "value": "\n\n**Command flow for ",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "gridfm_graphkit train --config config.yaml",
+            "kind": 12,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 1,
+                "startColumn": 1,
+                "endLineNumber": 1,
+                "endColumn": 1
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\__init__.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/__init__.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/__init__.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "86ecef6a-4857-487b-a2e9-84e521715f99"
+        },
+        {
+          "value": ":**\n\n```python\n# 1. __main__.py parses CLI args\nparser.add_subparsers([\"train\", \"finetune\", \"evaluate\", \"predict\"])\nargs = parser.parse_args()\n\n# 2. cli.py:main_cli orchestrates the pipeline\ndef main_cli(args):\n    # Load config\n    config_args = NestedNamespace(**yaml.safe_load(args.config))\n    \n    # Initialize data\n    litGrid = LitGridHeteroDataModule(config_args, args.data_path)\n    \n    # Initialize task (contains model)\n    model = get_task(config_args, litGrid.data_normalizers)\n    \n    # Create trainer\n    trainer = L.Trainer(\n        logger=MLFlowLogger(...),\n        max_epochs=config_args.training.epochs,\n        callbacks=get_training_callbacks(config_args)\n    )\n    \n    # Run training\n    trainer.fit(model=model, datamodule=litGrid)\n    trainer.test(model=model, datamodule=litGrid)\n```\n\n**Key steps:**\n1. **Setup data**: ",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "litGrid.setup(\"fit\")",
+            "kind": 12,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 1,
+                "startColumn": 1,
+                "endLineNumber": 1,
+                "endColumn": 1
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\hetero_powergrid_datamodule.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/hetero_powergrid_datamodule.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/hetero_powergrid_datamodule.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "1f4a0cb0-4436-4ea0-ada1-459dc38019b3"
+        },
+        {
+          "value": " loads datasets, applies transforms, splits data\n2. **Training loop**: PyTorch Lightning calls ",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "model.training_step(batch)",
+            "kind": 12,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 1,
+                "startColumn": 1,
+                "endLineNumber": 1,
+                "endColumn": 1
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\pf_task.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/pf_task.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/pf_task.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "5a49e5b1-a978-41df-b819-ce815639cea4"
+        },
+        {
+          "value": "\n3. **Validation**: Calls [`model.validation_step(batch)",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "](gridfm_graphkit/tasks/base_task.py) every ",
+            "kind": 12,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 1,
+                "startColumn": 1,
+                "endLineNumber": 1,
+                "endColumn": 1
+              },
+              "uri": {
+                "$mid": 1,
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/__init__.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "746af237-a3dc-4aa6-aa27-1855b24fb373"
+        },
+        {
+          "value": "N` steps\n4. **Testing**: Calls ",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "model.test_step(batch)",
+            "kind": 12,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 1,
+                "startColumn": 1,
+                "endLineNumber": 1,
+                "endColumn": 1
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\opf_task.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "0e5d864d-63da-4ba6-ba95-6866c78ffe41"
+        },
+        {
+          "value": ", generates plots/metrics\n\n---\n\n## Summary of Responsibilities\n\n| Component | Responsibility |\n|-----------|---------------|\n| **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "name": "gridfm_graphkit/__main__.py",
+          "inlineReference": {
+            "$mid": 1,
+            "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\__main__.py",
+            "_sep": 1,
+            "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/__main__.py",
+            "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/__main__.py",
+            "scheme": "file"
+          }
+        },
+        {
+          "value": "** | CLI argument parsing |\n| **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "name": "gridfm_graphkit/cli.py",
+          "inlineReference": {
+            "$mid": 1,
+            "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\cli.py",
+            "_sep": 1,
+            "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/cli.py",
+            "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/cli.py",
+            "scheme": "file"
+          }
+        },
+        {
+          "value": "** | Main pipeline orchestration |\n| **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "LitGridHeteroDataModule",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 23,
+                "startColumn": 7,
+                "endLineNumber": 23,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\hetero_powergrid_datamodule.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/hetero_powergrid_datamodule.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/hetero_powergrid_datamodule.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "272b123a-524a-42a7-b12a-a0e932230fff"
+        },
+        {
+          "value": "** | Data loading, splitting, batching |\n| **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "HeteroGridDatasetDisk",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 14,
+                "startColumn": 7,
+                "endLineNumber": 14,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\powergrid_hetero_dataset.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/powergrid_hetero_dataset.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/powergrid_hetero_dataset.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "a790ebcd-e90f-49b9-8702-1683d2ba3d5e"
+        },
+        {
+          "value": "** | Reading preprocessed graphs from disk |\n| **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "PowerFlowTask",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 35,
+                "startColumn": 7,
+                "endLineNumber": 35,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\pf_task.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/pf_task.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/pf_task.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "e590e8a0-79fb-43bf-ae57-c89fccda8632"
+        },
+        {
+          "value": "** | Training/evaluation logic for power flow |\n| **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "GNS_heterogeneous",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 30,
+                "startColumn": 7,
+                "endLineNumber": 30,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\models\\gnn_heterogeneous_gns.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/models/gnn_heterogeneous_gns.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/models/gnn_heterogeneous_gns.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "d92e8fdb-afd2-46f0-9269-145a1742eca4"
+        },
+        {
+          "value": "** | GNN model architecture |\n| **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "HeteroDataMVANormalizer",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 98,
+                "startColumn": 7,
+                "endLineNumber": 98,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\normalizers.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/normalizers.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/normalizers.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "ff488cdd-23b7-46b4-a16e-8c038183c698"
+        },
+        {
+          "value": "** | Feature normalization |\n| **",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        },
+        {
+          "kind": "inlineReference",
+          "inlineReference": {
+            "name": "PowerFlowTransforms",
+            "kind": 4,
+            "containerName": "",
+            "location": {
+              "range": {
+                "startLineNumber": 17,
+                "startColumn": 7,
+                "endLineNumber": 17,
+                "endColumn": 7
+              },
+              "uri": {
+                "$mid": 1,
+                "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\task_transforms.py",
+                "_sep": 1,
+                "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/task_transforms.py",
+                "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/task_transforms.py",
+                "scheme": "file"
+              }
+            }
+          },
+          "resolveId": "e3c4ae4f-6b2b-46a6-8ad0-09290dec0866"
+        },
+        {
+          "value": "** | Task-specific data preprocessing |\n\n---\n\n**Want to dive deeper into any component?** Let me know if you'd like details on:\n- How transforms/masking work\n- Model architecture internals\n- Loss function design\n- Physics decoders\n- Testing/evaluation workflow",
+          "supportThemeIcons": false,
+          "supportHtml": false,
+          "baseUri": {
+            "$mid": 1,
+            "path": "/f:/studium/gridfm-graphkit/",
+            "scheme": "file"
+          }
+        }
+      ],
+      "agent": {
+        "extensionId": {
+          "value": "GitHub.copilot-chat",
+          "_lower": "github.copilot-chat"
+        },
+        "extensionVersion": "0.37.1",
+        "publisherDisplayName": "GitHub",
+        "extensionPublisherId": "GitHub",
+        "extensionDisplayName": "GitHub Copilot Chat",
+        "id": "github.copilot.workspace",
+        "description": "Ask about your workspace",
+        "when": "!github.copilot.interactiveSession.disabled",
+        "metadata": {
+          "sampleRequest": "How do I build this project?",
+          "themeIcon": {
+            "id": "code"
+          },
+          "hasFollowups": false,
+          "supportIssueReporting": false
+        },
+        "name": "workspace",
+        "fullName": "Workspace",
+        "locations": [
+          "panel"
+        ],
+        "modes": [
+          "agent",
+          "ask",
+          "edit"
+        ],
+        "slashCommands": [
+          {
+            "name": "explain",
+            "description": "Explain how the code in your active editor works"
+          },
+          {
+            "name": "tests",
+            "description": "Generate unit tests for the selected code",
+            "disambiguation": [
+              {
+                "category": "create_tests",
+                "description": "The user wants to generate unit tests.",
+                "examples": [
+                  "Generate tests for my selection using pytest."
+                ]
+              }
+            ]
+          },
+          {
+            "name": "fix",
+            "description": "Propose a fix for the problems in the selected code",
+            "sampleRequest": "There is a problem in this code. Rewrite the code to show it with the bug fixed."
+          },
+          {
+            "name": "new",
+            "description": "Scaffold code for a new file or project in a workspace",
+            "sampleRequest": "Create a RESTful API server using typescript",
+            "isSticky": true,
+            "disambiguation": [
+              {
+                "category": "create_new_workspace_or_extension",
+                "description": "The user wants to create a complete Visual Studio Code workspace from scratch, such as a new application or a Visual Studio Code extension. Use this category only if the question relates to generating or creating new workspaces in Visual Studio Code. Do not use this category for updating existing code or generating sample code snippets",
+                "examples": [
+                  "Scaffold a Node server.",
+                  "Create a sample project which uses the fileSystemProvider API.",
+                  "react application"
+                ]
+              }
+            ]
+          },
+          {
+            "name": "newNotebook",
+            "description": "Create a new Jupyter Notebook",
+            "sampleRequest": "How do I create a notebook to load data from a csv file?",
+            "disambiguation": [
+              {
+                "category": "create_jupyter_notebook",
+                "description": "The user wants to create a new Jupyter notebook in Visual Studio Code.",
+                "examples": [
+                  "Create a notebook to analyze this CSV file."
+                ]
+              }
+            ]
+          },
+          {
+            "name": "setupTests",
+            "description": "Set up tests in your project (Experimental)",
+            "sampleRequest": "add playwright tests to my project",
+            "when": "config.github.copilot.chat.setupTests.enabled",
+            "disambiguation": [
+              {
+                "category": "set_up_tests",
+                "description": "The user wants to configure project test setup, framework, or test runner. The user does not want to fix their existing tests.",
+                "examples": [
+                  "Set up tests for this project."
+                ]
+              }
+            ]
+          }
+        ],
+        "disambiguation": [
+          {
+            "category": "workspace_project_questions",
+            "description": "The user wants to learn about or update the code or files in their current workspace. Questions in this category may be about understanding what the whole workspace does or locating the implementation of some code. This does not include generating or updating tests.",
+            "examples": [
+              "What does this project do?"
+            ]
+          },
+          {
+            "category": "find_code_in_workspace",
+            "description": "The user wants to locate the implementation of some functionality in their current workspace.",
+            "examples": [
+              "Where is the tree widget implemented?"
+            ]
+          },
+          {
+            "category": "generate_with_workspace_context",
+            "description": "The user wants to generate code based on multiple files in the workspace and did not specify which files to reference.",
+            "examples": [
+              "Create a README for this project."
+            ]
+          }
+        ]
+      },
+      "timestamp": 1770378298409,
+      "modelId": "copilot/claude-sonnet-4.5",
+      "responseId": "response_1ca6231c-f1f1-43a4-9e8b-3c8010861fbc",
+      "result": {
+        "timings": {
+          "firstProgress": 7596,
+          "totalElapsed": 40500
+        },
+        "metadata": {
+          "codeBlocks": [
+            {
+              "code": "┌─────────────────────────────────────────────────────────────┐\n│                     CLI Entry Point                          │\n│              (gridfm_graphkit/__main__.py)                   │\n└──────────────────────┬──────────────────────────────────────┘\n                       │\n                       ▼\n┌─────────────────────────────────────────────────────────────┐\n│                   Main Pipeline (cli.py)                     │\n│  - Loads config YAML                                         │\n│  - Initializes DataModule                                    │\n│  - Creates Task (model + training logic)                     │\n│  - Runs PyTorch Lightning Trainer                            │\n└──────────────────────┬──────────────────────────────────────┘\n                       │\n         ┌─────────────┼─────────────┐\n         ▼             ▼             ▼\n    ┌────────┐   ┌─────────┐   ┌─────────┐\n    │  DATA  │   │  MODEL  │   │  TASK   │\n    └────────┘   └─────────┘   └─────────┘\n",
+              "language": "",
+              "markdownBeforeBlock": "# gridfm-graphkit Architecture Overview\n\nThis is a **PyTorch Lightning-based framework** for training and evaluating Graph Neural Networks (GNNs) on power grid tasks. Let me break down the architecture:\n\n---\n\n## 1. High-Level Architecture\n\nThe codebase follows a **modular, task-driven design** with these main components:\n\n"
+            },
+            {
+              "code": "Raw Data (Disk)\n    │\n    ▼\n┌──────────────────────────────────────────────┐\n│  HeteroGridDatasetDisk                       │\n│  - Loads graph data from disk                │\n│  - Applies normalization                     │\n│  - Returns HeteroData objects                │\n└──────────────────┬───────────────────────────┘\n                   │\n                   ▼\n┌──────────────────────────────────────────────┐\n│  LitGridHeteroDataModule                     │\n│  - Splits into train/val/test                │\n│  - Creates DataLoaders                       │\n└──────────────────┬───────────────────────────┘\n                   │\n                   ▼\n┌──────────────────────────────────────────────┐\n│  Task (e.g., PowerFlowTask)                  │\n│  - training_step: Forward pass + loss        │\n│  - validation_step: Metrics                  │\n│  - test_step: Detailed evaluation            │\n└──────────────────┬───────────────────────────┘\n                   │\n                   ▼\n┌──────────────────────────────────────────────┐\n│  Model (e.g., GNS_heterogeneous)             │\n│  - GNN forward pass                          │\n│  - Physics decoder (optional)                │\n└──────────────────────────────────────────────┘\n",
+              "language": "",
+              "markdownBeforeBlock": "\n### Core Components:\n\n1. **** - Data loading, preprocessing, normalization\n2. **** - GNN architectures (heterogeneous graph models)\n3. **** - Task-specific training/evaluation logic\n4. **** - Loss functions, callbacks\n5. **** - Registries and parameter handling\n\n---\n\n## 2. Data Flow\n\n"
+            },
+            {
+              "code": "class BaseTask(L.LightningModule):\n    \"\"\"Defines training/validation/test logic\"\"\"\n    def training_step(self, batch): ...\n    def validation_step(self, batch): ...\n    def test_step(self, batch): ...\n",
+              "language": "python",
+              "markdownBeforeBlock": "\n**Example batch flow:**\n1.  loads a scenario from disk\n2. Task-specific transforms (e.g., ) apply masking\n3. DataLoader batches graphs → \n4. Model predicts bus/generator features → Loss computed → Backprop\n\n---\n\n## 3. Key Abstractions\n\n### **** (Abstract Base)\n"
+            },
+            {
+              "code": "class LitGridHeteroDataModule(L.LightningDataModule):\n    \"\"\"Handles data loading/splitting for multiple networks\"\"\"\n    def setup(self, stage: str):\n        # Load datasets, split train/val/test\n    def train_dataloader(self): ...\n",
+              "language": "python",
+              "markdownBeforeBlock": "\n**Task Hierarchy:**\n- [`BaseTaskReconstructionTask`](gridfm_graphkit/tasks/reconstruction_tasks.py) → **Concrete Tasks**:\n  -  - Predicts voltage/power from masked inputs\n  -  - Solves OPF problem\n  -  - Estimates state from noisy measurements\n\n### ****\n"
+            },
+            {
+              "code": "class HeteroGridDatasetDisk(Dataset):\n    \"\"\"Loads pre-processed graph data from disk\"\"\"\n    def __getitem__(self, idx) -> HeteroData:\n        # Returns heterogeneous graph with bus/gen/branch edges\n",
+              "language": "python",
+              "markdownBeforeBlock": "\n### ****\n"
+            },
+            {
+              "code": "task:\n  task_name: OptimalPowerFlow  # Selects OptimalPowerFlowTask\n\ndata:\n  networks: [case14_ieee]      # Which power system to use\n  scenarios: [250000]          # Number of samples\n  normalization: HeteroDataMVANormalizer\n  test_ratio: 0.1              # Train/val/test splits\n\nmodel:\n  type: GNS_heterogeneous      # Model architecture\n  hidden_size: 48\n  num_layers: 12\n\ntraining:\n  batch_size: 64\n  epochs: 200\n  losses: [LayeredWeightedPhysics, MaskedGenMSE, MaskedBusMSE]\n",
+              "language": "yaml",
+              "markdownBeforeBlock": "\n### **Model Architecture**\n-  - Message-passing GNN for heterogeneous graphs\n- Physics decoders (e.g., ) - Enforce power flow equations\n\n---\n\n## 4. Configuration System ()\n\nThe YAML config drives **all** experiment parameters:\n\n"
+            },
+            {
+              "code": "# 1. __main__.py parses CLI args\nparser.add_subparsers([\"train\", \"finetune\", \"evaluate\", \"predict\"])\nargs = parser.parse_args()\n\n# 2. cli.py:main_cli orchestrates the pipeline\ndef main_cli(args):\n    # Load config\n    config_args = NestedNamespace(**yaml.safe_load(args.config))\n    \n    # Initialize data\n    litGrid = LitGridHeteroDataModule(config_args, args.data_path)\n    \n    # Initialize task (contains model)\n    model = get_task(config_args, litGrid.data_normalizers)\n    \n    # Create trainer\n    trainer = L.Trainer(\n        logger=MLFlowLogger(...),\n        max_epochs=config_args.training.epochs,\n        callbacks=get_training_callbacks(config_args)\n    )\n    \n    # Run training\n    trainer.fit(model=model, datamodule=litGrid)\n    trainer.test(model=model, datamodule=litGrid)\n",
+              "language": "python",
+              "markdownBeforeBlock": "\n**How it's parsed:**\n1. [`main_cliyaml.safe_load()`\n2. Converts to [`NestedNamespaceargs.data.networks`)\n3. Parameter handlers instantiate components:\n   - [`get_task(args)OptimalPowerFlowTask`](gridfm_graphkit/tasks/opf_task.py)\n   - [`load_model(args)GNS_heterogeneous`](gridfm_graphkit/models/gnn_heterogeneous_gns.py)\n   - [`get_task_transforms(args)OptimalPowerFlowTransforms`](gridfm_graphkit/datasets/task_transforms.py)\n\n---\n\n## 5. Entry Point: \n\n**Command flow for :**\n\n"
+            }
+          ],
+          "promptTokens": 36011,
+          "outputTokens": 3006,
+          "toolCallRounds": [
+            {
+              "response": "# gridfm-graphkit Architecture Overview\n\nThis is a **PyTorch Lightning-based framework** for training and evaluating Graph Neural Networks (GNNs) on power grid tasks. Let me break down the architecture:\n\n---\n\n## 1. High-Level Architecture\n\nThe codebase follows a **modular, task-driven design** with these main components:\n\n```\n┌─────────────────────────────────────────────────────────────┐\n│                     CLI Entry Point                          │\n│              (gridfm_graphkit/__main__.py)                   │\n└──────────────────────┬──────────────────────────────────────┘\n                       │\n                       ▼\n┌─────────────────────────────────────────────────────────────┐\n│                   Main Pipeline (cli.py)                     │\n│  - Loads config YAML                                         │\n│  - Initializes DataModule                                    │\n│  - Creates Task (model + training logic)                     │\n│  - Runs PyTorch Lightning Trainer                            │\n└──────────────────────┬──────────────────────────────────────┘\n                       │\n         ┌─────────────┼─────────────┐\n         ▼             ▼             ▼\n    ┌────────┐   ┌─────────┐   ┌─────────┐\n    │  DATA  │   │  MODEL  │   │  TASK   │\n    └────────┘   └─────────┘   └─────────┘\n```\n\n### Core Components:\n\n1. **[`gridfm_graphkit/datasets/`](gridfm_graphkit/datasets/)** - Data loading, preprocessing, normalization\n2. **[`gridfm_graphkit/models/`](gridfm_graphkit/models/)** - GNN architectures (heterogeneous graph models)\n3. **[`gridfm_graphkit/tasks/`](gridfm_graphkit/tasks/)** - Task-specific training/evaluation logic\n4. **[`gridfm_graphkit/training/`](gridfm_graphkit/training/)** - Loss functions, callbacks\n5. **[`gridfm_graphkit/io/`](gridfm_graphkit/io/)** - Registries and parameter handling\n\n---\n\n## 2. Data Flow\n\n```\nRaw Data (Disk)\n    │\n    ▼\n┌──────────────────────────────────────────────┐\n│  HeteroGridDatasetDisk                       │\n│  - Loads graph data from disk                │\n│  - Applies normalization                     │\n│  - Returns HeteroData objects                │\n└──────────────────┬───────────────────────────┘\n                   │\n                   ▼\n┌──────────────────────────────────────────────┐\n│  LitGridHeteroDataModule                     │\n│  - Splits into train/val/test                │\n│  - Creates DataLoaders                       │\n└──────────────────┬───────────────────────────┘\n                   │\n                   ▼\n┌──────────────────────────────────────────────┐\n│  Task (e.g., PowerFlowTask)                  │\n│  - training_step: Forward pass + loss        │\n│  - validation_step: Metrics                  │\n│  - test_step: Detailed evaluation            │\n└──────────────────┬───────────────────────────┘\n                   │\n                   ▼\n┌──────────────────────────────────────────────┐\n│  Model (e.g., GNS_heterogeneous)             │\n│  - GNN forward pass                          │\n│  - Physics decoder (optional)                │\n└──────────────────────────────────────────────┘\n```\n\n**Example batch flow:**\n1. [`HeteroGridDatasetDisk`](gridfm_graphkit/datasets/powergrid_hetero_dataset.py) loads a scenario from disk\n2. Task-specific transforms (e.g., [`PowerFlowTransforms`](gridfm_graphkit/datasets/task_transforms.py)) apply masking\n3. DataLoader batches graphs → [`PowerFlowTask.training_step`](gridfm_graphkit/tasks/pf_task.py)\n4. Model predicts bus/generator features → Loss computed → Backprop\n\n---\n\n## 3. Key Abstractions\n\n### **[`BaseTask`](gridfm_graphkit/tasks/base_task.py)** (Abstract Base)\n```python\nclass BaseTask(L.LightningModule):\n    \"\"\"Defines training/validation/test logic\"\"\"\n    def training_step(self, batch): ...\n    def validation_step(self, batch): ...\n    def test_step(self, batch): ...\n```\n\n**Task Hierarchy:**\n- [`BaseTask`](gridfm_graphkit/tasks/base_task.py) → [`ReconstructionTask`](gridfm_graphkit/tasks/reconstruction_tasks.py) → **Concrete Tasks**:\n  - [`PowerFlowTask`](gridfm_graphkit/tasks/pf_task.py) - Predicts voltage/power from masked inputs\n  - [`OptimalPowerFlowTask`](gridfm_graphkit/tasks/opf_task.py) - Solves OPF problem\n  - [`StateEstimationTask`](gridfm_graphkit/tasks/se_task.py) - Estimates state from noisy measurements\n\n### **[`LitGridHeteroDataModule`](gridfm_graphkit/datasets/hetero_powergrid_datamodule.py)**\n```python\nclass LitGridHeteroDataModule(L.LightningDataModule):\n    \"\"\"Handles data loading/splitting for multiple networks\"\"\"\n    def setup(self, stage: str):\n        # Load datasets, split train/val/test\n    def train_dataloader(self): ...\n```\n\n### **[`HeteroGridDatasetDisk`](gridfm_graphkit/datasets/powergrid_hetero_dataset.py)**\n```python\nclass HeteroGridDatasetDisk(Dataset):\n    \"\"\"Loads pre-processed graph data from disk\"\"\"\n    def __getitem__(self, idx) -> HeteroData:\n        # Returns heterogeneous graph with bus/gen/branch edges\n```\n\n### **Model Architecture**\n- [`GNS_heterogeneous`](gridfm_graphkit/models/gnn_heterogeneous_gns.py) - Message-passing GNN for heterogeneous graphs\n- Physics decoders (e.g., [`PhysicsDecoderPF`](gridfm_graphkit/models/utils.py)) - Enforce power flow equations\n\n---\n\n## 4. Configuration System ([`examples/config/HGNS_OPF_datakit_case14.yaml`](examples/config/HGNS_OPF_datakit_case14.yaml))\n\nThe YAML config drives **all** experiment parameters:\n\n```yaml\ntask:\n  task_name: OptimalPowerFlow  # Selects OptimalPowerFlowTask\n\ndata:\n  networks: [case14_ieee]      # Which power system to use\n  scenarios: [250000]          # Number of samples\n  normalization: HeteroDataMVANormalizer\n  test_ratio: 0.1              # Train/val/test splits\n\nmodel:\n  type: GNS_heterogeneous      # Model architecture\n  hidden_size: 48\n  num_layers: 12\n\ntraining:\n  batch_size: 64\n  epochs: 200\n  losses: [LayeredWeightedPhysics, MaskedGenMSE, MaskedBusMSE]\n```\n\n**How it's parsed:**\n1. [`main_cli`](gridfm_graphkit/cli.py) loads YAML → `yaml.safe_load()`\n2. Converts to [`NestedNamespace`](gridfm_graphkit/io/param_handler.py) (allows `args.data.networks`)\n3. Parameter handlers instantiate components:\n   - [`get_task(args)`](gridfm_graphkit/io/param_handler.py) → Creates [`OptimalPowerFlowTask`](gridfm_graphkit/tasks/opf_task.py)\n   - [`load_model(args)`](gridfm_graphkit/io/param_handler.py) → Creates [`GNS_heterogeneous`](gridfm_graphkit/models/gnn_heterogeneous_gns.py)\n   - [`get_task_transforms(args)`](gridfm_graphkit/io/param_handler.py) → Creates [`OptimalPowerFlowTransforms`](gridfm_graphkit/datasets/task_transforms.py)\n\n---\n\n## 5. Entry Point: [`gridfm_graphkit/cli.py`](gridfm_graphkit/cli.py)\n\n**Command flow for `gridfm_graphkit train --config config.yaml`:**\n\n```python\n# 1. __main__.py parses CLI args\nparser.add_subparsers([\"train\", \"finetune\", \"evaluate\", \"predict\"])\nargs = parser.parse_args()\n\n# 2. cli.py:main_cli orchestrates the pipeline\ndef main_cli(args):\n    # Load config\n    config_args = NestedNamespace(**yaml.safe_load(args.config))\n    \n    # Initialize data\n    litGrid = LitGridHeteroDataModule(config_args, args.data_path)\n    \n    # Initialize task (contains model)\n    model = get_task(config_args, litGrid.data_normalizers)\n    \n    # Create trainer\n    trainer = L.Trainer(\n        logger=MLFlowLogger(...),\n        max_epochs=config_args.training.epochs,\n        callbacks=get_training_callbacks(config_args)\n    )\n    \n    # Run training\n    trainer.fit(model=model, datamodule=litGrid)\n    trainer.test(model=model, datamodule=litGrid)\n```\n\n**Key steps:**\n1. **Setup data**: [`litGrid.setup(\"fit\")`](gridfm_graphkit/datasets/hetero_powergrid_datamodule.py) loads datasets, applies transforms, splits data\n2. **Training loop**: PyTorch Lightning calls [`model.training_step(batch)`](gridfm_graphkit/tasks/pf_task.py)\n3. **Validation**: Calls [`model.validation_step(batch)`](gridfm_graphkit/tasks/base_task.py) every `N` steps\n4. **Testing**: Calls [`model.test_step(batch)`](gridfm_graphkit/tasks/opf_task.py), generates plots/metrics\n\n---\n\n## Summary of Responsibilities\n\n| Component | Responsibility |\n|-----------|---------------|\n| **[`__main__.py`](gridfm_graphkit/__main__.py)** | CLI argument parsing |\n| **[`cli.py`](gridfm_graphkit/cli.py)** | Main pipeline orchestration |\n| **[`LitGridHeteroDataModule`](gridfm_graphkit/datasets/hetero_powergrid_datamodule.py)** | Data loading, splitting, batching |\n| **[`HeteroGridDatasetDisk`](gridfm_graphkit/datasets/powergrid_hetero_dataset.py)** | Reading preprocessed graphs from disk |\n| **[`PowerFlowTask`](gridfm_graphkit/tasks/pf_task.py)** | Training/evaluation logic for power flow |\n| **[`GNS_heterogeneous`](gridfm_graphkit/models/gnn_heterogeneous_gns.py)** | GNN model architecture |\n| **[`HeteroDataMVANormalizer`](gridfm_graphkit/datasets/normalizers.py)** | Feature normalization |\n| **[`PowerFlowTransforms`](gridfm_graphkit/datasets/task_transforms.py)** | Task-specific data preprocessing |\n\n---\n\n**Want to dive deeper into any component?** Let me know if you'd like details on:\n- How transforms/masking work\n- Model architecture internals\n- Loss function design\n- Physics decoders\n- Testing/evaluation workflow",
+              "toolCalls": [],
+              "toolInputRetry": 0,
+              "id": "a1182f6b-54c4-4925-9da1-2fb4580c7a76"
+            }
+          ],
+          "modelMessageId": "3f61f168-0811-4086-9f19-cfc83b9376b7",
+          "responseId": "ad3a2146-4184-42a9-90f5-989a63371af6",
+          "sessionId": "91ee10e9-b8ee-41ed-b18b-201775a99515",
+          "agentId": "github.copilot.workspace"
+        },
+        "details": "Claude Sonnet 4.5 • 1x",
+        "usage": {
+          "completionTokens": 3006,
+          "promptTokens": 36011,
+          "promptTokenDetails": [
+            {
+              "category": "System",
+              "label": "System Instructions",
+              "percentageOfPrompt": 3
+            },
+            {
+              "category": "User Context",
+              "label": "Messages",
+              "percentageOfPrompt": 97
+            }
+          ]
+        }
+      },
+      "responseMarkdownInfo": [
+        {
+          "suggestionId": "sgt-a34bb737-88a9-4919-a966-692c5af2c3aa"
+        },
+        {
+          "suggestionId": "sgt-1e36fdd4-8f8f-4353-a8e3-e70c35aa1ff9"
+        },
+        {
+          "suggestionId": "sgt-c869779a-bd98-48ce-ae42-2fcc9895da8a"
+        },
+        {
+          "suggestionId": "sgt-4483740d-a3ed-4480-9997-7ebb1ee0ddba"
+        },
+        {
+          "suggestionId": "sgt-624c9f0b-79ef-4d38-afb1-9fb1951d621c"
+        },
+        {
+          "suggestionId": "sgt-2de8611b-01e8-4677-a321-940f52a0f515"
+        },
+        {
+          "suggestionId": "sgt-e7a51282-4f3b-4b44-a155-8dca6af24617"
+        }
+      ],
+      "followups": [],
+      "modelState": {
+        "value": 1,
+        "completedAt": 1770378339065
+      },
+      "contentReferences": [
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\.secrets.baseline",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/.secrets.baseline",
+              "path": "/f:/studium/gridfm-graphkit/.secrets.baseline",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 48,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\docs\\datasets\\data_modules.md",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/docs/datasets/data_modules.md",
+              "path": "/f:/studium/gridfm-graphkit/docs/datasets/data_modules.md",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 4,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\docs\\datasets\\powergrid.md",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/docs/datasets/powergrid.md",
+              "path": "/f:/studium/gridfm-graphkit/docs/datasets/powergrid.md",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 4,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\docs\\index.md",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/docs/index.md",
+              "path": "/f:/studium/gridfm-graphkit/docs/index.md",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 18,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\docs\\quick_start\\quick_start.md",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/docs/quick_start/quick_start.md",
+              "path": "/f:/studium/gridfm-graphkit/docs/quick_start/quick_start.md",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 3,
+              "startColumn": 1,
+              "endLineNumber": 102,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\docs\\quick_start\\yaml_config.md",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/docs/quick_start/yaml_config.md",
+              "path": "/f:/studium/gridfm-graphkit/docs/quick_start/yaml_config.md",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 3,
+              "startColumn": 1,
+              "endLineNumber": 154,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\docs\\tutorials\\contingency_analysis.md",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/docs/tutorials/contingency_analysis.md",
+              "path": "/f:/studium/gridfm-graphkit/docs/tutorials/contingency_analysis.md",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 10,
+              "startColumn": 1,
+              "endLineNumber": 44,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\docs\\tutorials\\feature_reconstruction.md",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/docs/tutorials/feature_reconstruction.md",
+              "path": "/f:/studium/gridfm-graphkit/docs/tutorials/feature_reconstruction.md",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 22,
+              "startColumn": 1,
+              "endLineNumber": 102,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_OPF_datakit_case118.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case118.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case118.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 54,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_OPF_datakit_case14.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case14.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case14.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 54,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_OPF_datakit_case2000.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case2000.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case2000.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 54,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_OPF_datakit_case30.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case30.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case30.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 54,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_OPF_datakit_case500.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case500.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case500.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 54,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_OPF_datakit_case57.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case57.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_OPF_datakit_case57.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 54,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_OPFData_case118.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_OPFData_case118.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_OPFData_case118.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 53,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_OPFData_case14.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_OPFData_case14.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_OPFData_case14.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 53,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_OPFData_case2000.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_OPFData_case2000.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_OPFData_case2000.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 53,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_OPFData_case30.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_OPFData_case30.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_OPFData_case30.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 53,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_OPFData_case500.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_OPFData_case500.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_OPFData_case500.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 53,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_OPFData_case57.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_OPFData_case57.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_OPFData_case57.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 53,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_PF_datakit_case118.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_PF_datakit_case118.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_PF_datakit_case118.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 51,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_PF_datakit_case14.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_PF_datakit_case14.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_PF_datakit_case14.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 52,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_PF_datakit_case2000.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_PF_datakit_case2000.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_PF_datakit_case2000.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 51,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_PF_datakit_case30.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_PF_datakit_case30.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_PF_datakit_case30.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 51,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_PF_datakit_case500.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_PF_datakit_case500.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_PF_datakit_case500.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 51,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_PF_datakit_case57.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_PF_datakit_case57.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_PF_datakit_case57.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 51,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_PF_pfdelta_case118.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_PF_pfdelta_case118.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_PF_pfdelta_case118.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 55,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_SE_datakit_case118.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_SE_datakit_case118.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_SE_datakit_case118.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 76,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\examples\\config\\HGNS_SE_datakit_case14.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/examples/config/HGNS_SE_datakit_case14.yaml",
+              "path": "/f:/studium/gridfm-graphkit/examples/config/HGNS_SE_datakit_case14.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 76,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\__init__.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/__init__.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/__init__.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 9,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\__main__.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/__main__.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/__main__.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 59,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\cli.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/cli.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/cli.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 82,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\__init__.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/__init__.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/__init__.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 16,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\globals.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/globals.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/globals.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 45,
+              "startColumn": 1,
+              "endLineNumber": 55,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\hetero_powergrid_datamodule.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/hetero_powergrid_datamodule.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/hetero_powergrid_datamodule.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 24,
+              "startColumn": 1,
+              "endLineNumber": 43,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\hetero_powergrid_datamodule.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/hetero_powergrid_datamodule.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/hetero_powergrid_datamodule.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 67,
+              "startColumn": 1,
+              "endLineNumber": 212,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\powergrid_datamodule.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/powergrid_datamodule.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/powergrid_datamodule.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 65,
+              "startColumn": 1,
+              "endLineNumber": 198,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\powergrid_hetero_dataset.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/powergrid_hetero_dataset.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/powergrid_hetero_dataset.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 235,
+              "startColumn": 1,
+              "endLineNumber": 242,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\task_transforms.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/task_transforms.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/task_transforms.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 58,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\transforms.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/transforms.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/transforms.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 99,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\datasets\\utils.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/datasets/utils.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/datasets/utils.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 61,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\models\\__init__.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/models/__init__.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/models/__init__.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 14,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\models\\utils.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/models/utils.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/models/utils.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 117,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\__init__.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/__init__.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/__init__.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 6,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\base_task.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/base_task.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/base_task.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 11,
+              "startColumn": 1,
+              "endLineNumber": 66,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\opf_task.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 50,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\opf_task.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 55,
+              "startColumn": 1,
+              "endLineNumber": 57,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\opf_task.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 129,
+              "startColumn": 1,
+              "endLineNumber": 144,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\opf_task.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 292,
+              "startColumn": 1,
+              "endLineNumber": 295,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\opf_task.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 298,
+              "startColumn": 1,
+              "endLineNumber": 326,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\opf_task.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/opf_task.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 460,
+              "startColumn": 1,
+              "endLineNumber": 486,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\pf_task.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/pf_task.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/pf_task.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 312,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\gridfm_graphkit\\tasks\\se_task.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/gridfm_graphkit/tasks/se_task.py",
+              "path": "/f:/studium/gridfm-graphkit/gridfm_graphkit/tasks/se_task.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 29,
+              "startColumn": 1,
+              "endLineNumber": 186,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\pyproject.toml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/pyproject.toml",
+              "path": "/f:/studium/gridfm-graphkit/pyproject.toml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 49,
+              "startColumn": 1,
+              "endLineNumber": 83,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\README.md",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/README.md",
+              "path": "/f:/studium/gridfm-graphkit/README.md",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 147,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\tests\\config\\datamodule_test_base_config.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/tests/config/datamodule_test_base_config.yaml",
+              "path": "/f:/studium/gridfm-graphkit/tests/config/datamodule_test_base_config.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 66,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\tests\\config\\datamodule_test_base_config2.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/tests/config/datamodule_test_base_config2.yaml",
+              "path": "/f:/studium/gridfm-graphkit/tests/config/datamodule_test_base_config2.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 34,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\tests\\config\\datamodule_test_base_config3.yaml",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/tests/config/datamodule_test_base_config3.yaml",
+              "path": "/f:/studium/gridfm-graphkit/tests/config/datamodule_test_base_config3.yaml",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 35,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\tests\\test_data_module.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/tests/test_data_module.py",
+              "path": "/f:/studium/gridfm-graphkit/tests/test_data_module.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 16,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\tests\\test_edge_flows.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/tests/test_edge_flows.py",
+              "path": "/f:/studium/gridfm-graphkit/tests/test_edge_flows.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 120,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\tests\\test_full_pipeline.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/tests/test_full_pipeline.py",
+              "path": "/f:/studium/gridfm-graphkit/tests/test_full_pipeline.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 10,
+              "startColumn": 1,
+              "endLineNumber": 32,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\tests\\test_pipeline.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/tests/test_pipeline.py",
+              "path": "/f:/studium/gridfm-graphkit/tests/test_pipeline.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 107,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        },
+        {
+          "kind": "reference",
+          "reference": {
+            "uri": {
+              "$mid": 1,
+              "fsPath": "f:\\studium\\gridfm-graphkit\\tests\\test_yaml_configs.py",
+              "_sep": 1,
+              "external": "file:///f%3A/studium/gridfm-graphkit/tests/test_yaml_configs.py",
+              "path": "/f:/studium/gridfm-graphkit/tests/test_yaml_configs.py",
+              "scheme": "file"
+            },
+            "range": {
+              "startLineNumber": 1,
+              "startColumn": 1,
+              "endLineNumber": 28,
+              "endColumn": 1
+            }
+          },
+          "options": {
+            "isFromTool": false
+          }
+        }
+      ],
+      "codeCitations": [],
+      "timeSpentWaiting": 1770378298410
+    }
+  ]
+}
