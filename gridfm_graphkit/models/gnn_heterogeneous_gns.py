@@ -173,10 +173,10 @@ class GNS_heterogeneous(nn.Module):
             else:
                 edge_attr_proj_dict[key] = None
 
-        bus_mask = mask_dict["bus"][:, VM_H : VA_H + 1]
-        gen_mask = mask_dict["gen"][:, : (PG_H + 1)]
-        bus_fixed = x_dict["bus"][:, VM_H : VA_H + 1]
-        gen_fixed = x_dict["gen"][:, : (PG_H + 1)]
+        bus_mask = mask_dict["bus"][:, VM_H : VA_H + 1]# [num_bus, 2] - which features to predict
+        gen_mask = mask_dict["gen"][:, : (PG_H + 1)]  # [num_gen, 1] - which features to predict
+        bus_fixed = x_dict["bus"][:, VM_H : VA_H + 1]# Ground truth values
+        gen_fixed = x_dict["gen"][:, : (PG_H + 1)]# Ground truth values
 
         # iterate layers
         for i, conv in enumerate(self.layers):
@@ -196,6 +196,7 @@ class GNS_heterogeneous(nn.Module):
             h_gen = h_gen + out_gen if out_gen.shape == h_gen.shape else out_gen
 
             # Decode bus and generator predictions
+            #! Regardless of mask vals
             bus_temp = self.mlp_bus(h_bus)  # [Nb, 2]  -> Vm, Va
             gen_temp = self.mlp_gen(h_gen)  # [Ng, 1]  -> Pg
 
@@ -222,6 +223,7 @@ class GNS_heterogeneous(nn.Module):
                     )
 
             else:
+                #! If mask vals = True -> Use predicted values; else use fixed (ground truth) values for physics calculations 
                 bus_temp = torch.where(bus_mask, bus_temp, bus_fixed)
                 gen_temp = torch.where(gen_mask, gen_temp, gen_fixed)
 
@@ -257,10 +259,10 @@ class GNS_heterogeneous(nn.Module):
                 output_temp = self.physics_decoder(
                     P_in,
                     Q_in,
-                    bus_temp,
+                    bus_temp, # ← Contains mixture of predicted + ground truth
                     x_dict["bus"],
-                    agg_bus,
-                    mask_dict,
+                    agg_bus, # ← Contains mixture of predicted + ground truth
+                    mask_dict, # ← Used only for bus type logic (PQ/PV/REF)
                 )
                 residual_P, residual_Q = self.node_residuals_layer(
                     P_in,
