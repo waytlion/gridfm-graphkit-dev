@@ -1,3 +1,28 @@
+# Architecture
+┌─────────────────────────────────────────────────────────────┐
+│                     CLI Entry Point                          │
+│              (gridfm_graphkit/__main__.py)                   │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   Main Pipeline (cli.py)                     │
+│  - Loads config YAML                                         │
+│  - Initializes DataModule                                    │
+│  - Creates Task (model + training logic)                     │
+│  - Runs PyTorch Lightning Trainer                            │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+         ┌─────────────┼─────────────┐
+         ▼             ▼             ▼
+    ┌────────┐   ┌─────────┐   ┌─────────┐
+    │  DATA  │   │  MODEL  │   │  TASK   │
+    └────────┘   └─────────┘   └─────────┘
+
+
+
+
+# Execution Flow
 Config YAML
     ↓
 [CLI Parser] → Load config as NestedNamespace
@@ -22,3 +47,39 @@ Config YAML
 
 
     
+# Data flow
+Raw Data (Disk)
+    │
+    ▼
+┌──────────────────────────────────────────────┐
+│  HeteroGridDatasetDisk                       │
+│  - Loads graph data from disk                │
+│  - Applies normalization                     │
+│  - Returns HeteroData objects                │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│  LitGridHeteroDataModule                     │
+│  - Splits into train/val/test                │
+│  - Creates DataLoaders                       │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│  Task (e.g., PowerFlowTask)                  │
+│  - training_step: Forward pass + loss        │
+│  - validation_step: Metrics                  │
+│  - test_step: Detailed evaluation            │
+└──────────────────┬───────────────────────────┘
+                   │
+                   ▼
+┌──────────────────────────────────────────────┐
+│  Model (e.g., GNS_heterogeneous)             │
+│  - GNN forward pass                          │
+│  - Physics decoder (optional)                │
+└──────────────────────────────────────────────┘
+
+
+# important files:
+-  gridfm_graphkit\datasets\globals.py: Clarifies Feature Indices
