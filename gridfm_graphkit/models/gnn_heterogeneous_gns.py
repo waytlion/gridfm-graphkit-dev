@@ -12,6 +12,9 @@ from gridfm_graphkit.models.utils import (
 )
 from gridfm_graphkit.datasets.globals import (
     # Bus feature indices
+    PD_H,      # added for Forecasting Task
+    QD_H,      # added for Forecasting Task
+    QG_H,      # added for Forecasting Task
     VM_H,
     VA_H,
     MIN_VM_H,
@@ -49,6 +52,18 @@ class GNS_heterogeneous(nn.Module):
         self.heads = args.model.attention_head
         self.task = args.task.task_name
         self.dropout = getattr(args.model, "dropout", 0.0)
+        
+        #! What features to predict at t+1. This is basically doing the same filtering as done in AddOPFForecastingMask(). I guess this redundance serves as defensive programming .. but mby double check with Alban
+        if self.task == "ForecastOPF":
+            # Predict all dynamic features
+            self.bus_output_indices = [PD_H, QD_H, QG_H, VM_H, VA_H]  
+            self.gen_output_indices = [PG_H]  
+    
+        else:  # OPF, PowerFlow, StateEstimation
+            self.bus_output_indices = [VM_H, VA_H]  
+            self.gen_output_indices = [PG_H]  
+    
+
 
         # projections for each node type
         self.input_proj_bus = nn.Sequential(
@@ -173,10 +188,10 @@ class GNS_heterogeneous(nn.Module):
             else:
                 edge_attr_proj_dict[key] = None
 
-        bus_mask = mask_dict["bus"][:, VM_H : VA_H + 1]# [num_bus, 2] - which features to predict
-        gen_mask = mask_dict["gen"][:, : (PG_H + 1)]  # [num_gen, 1] - which features to predict
-        bus_fixed = x_dict["bus"][:, VM_H : VA_H + 1]# Ground truth values
-        gen_fixed = x_dict["gen"][:, : (PG_H + 1)]# Ground truth values
+        bus_mask = mask_dict["bus"][:, self.bus_output_indices]# [num_bus, len(self.bus_output_indices)] - which features to predict
+        gen_mask = mask_dict["gen"][:, self.gen_output_indices]  # [num_gen, len(self.gen_output_indices)] - which features to predict
+        bus_fixed = x_dict["bus"][:, self.bus_output_indices]# Ground truth values
+        gen_fixed = x_dict["gen"][:, self.gen_output_indices]# Ground truth values
 
         # iterate layers
         for i, conv in enumerate(self.layers):
@@ -197,8 +212,8 @@ class GNS_heterogeneous(nn.Module):
 
             # Decode bus and generator predictions
             #! Regardless of mask vals
-            bus_temp = self.mlp_bus(h_bus)  # [Nb, 2]  -> Vm, Va
-            gen_temp = self.mlp_gen(h_gen)  # [Ng, 1]  -> Pg
+            bus_temp = self.mlp_bus(h_bus)  #! for non forecasting task : [Nb, 2]  -> Vm, Va
+            gen_temp = self.mlp_gen(h_gen)  #! for non forecasting : [Ng, 1]  -> Pg
 
             if self.task == "StateEstimation":
                 if i == self.num_layers - 1:
@@ -222,14 +237,16 @@ class GNS_heterogeneous(nn.Module):
                         None,
                     )
 
-            else:
+            else:  # Non-SE tasks
                 #! If mask vals = True -> Use predicted values; else use fixed (ground truth) values for physics calculations 
                 bus_temp = torch.where(bus_mask, bus_temp, bus_fixed)
                 gen_temp = torch.where(gen_mask, gen_temp, gen_fixed)
 
-                if self.task == "OptimalPowerFlow":
-                    bus_temp[:, VM_OUT] = bound_with_sigmoid(
-                        bus_temp[:, VM_OUT],
+                # Apply task-specific bounds and prepare input for physics decoder
+                if self.task == "ForecastOPF":
+                    # Apply sigmoid bounds to voltages (at indices 3, 4 in 5-feature output)
+                    bus_temp[:, 3] = bound_with_sigmoid(
+                        bus_temp[:, 3],
                         x_dict["bus"][:, MIN_VM_H],
                         x_dict["bus"][:, MAX_VM_H],
                     )
@@ -238,9 +255,34 @@ class GNS_heterogeneous(nn.Module):
                         x_dict["gen"][:, MIN_PG],
                         x_dict["gen"][:, MAX_PG],
                     )
-
+                    
+                    #!reorder bus features: physics decoder expects [Vm, Va] at indices [0, 1]
+                    bus_temp_reordered = torch.stack([
+                        bus_temp[:, 3],  
+                        bus_temp[:, 4], 
+                    ], dim=1)
+                    
+                elif self.task == "OptimalPowerFlow":
+                    bus_temp[:, VM_OUT] = bound_with_sigmoid(
+                        bus_temp[:, VM_OUT],
+                        x_dict["bus"][:, MIN_VM_H],
+                        x_dict["bus"][:, MAX_VM_H],
+                    )
+                    
+                    gen_temp[:, PG_OUT_GEN] = bound_with_sigmoid(
+                        gen_temp[:, PG_OUT_GEN],
+                        x_dict["gen"][:, MIN_PG],
+                        x_dict["gen"][:, MAX_PG],
+                    )
+                    
+                    bus_temp_reordered = bus_temp  # Already in [Vm, Va] format
+                    
+                else:  # PowerFlow and other tasks
+                    bus_temp_reordered = bus_temp  # Already in [Vm, Va] format
+                
+                # Compute power flows from voltages (shared for all non-SE tasks)
                 Pft, Qft = self.branch_flow_layer(
-                    bus_temp,
+                    bus_temp_reordered,
                     bus_edge_index,
                     bus_edge_attr,
                 )
@@ -256,18 +298,30 @@ class GNS_heterogeneous(nn.Module):
                     dim=0,
                     dim_size=num_bus,
                 )
-                output_temp = self.physics_decoder(
+                
+                # Physics decoder validates/derives values from power balance
+                physics_output = self.physics_decoder(
                     P_in,
                     Q_in,
-                    bus_temp, # ← Contains mixture of predicted + ground truth
+                    bus_temp_reordered,  # Input: [Vm, Va] in expected format
                     x_dict["bus"],
-                    agg_bus, # ← Contains mixture of predicted + ground truth
-                    mask_dict, # ← Used only for bus type logic (PQ/PV/REF)
+                    agg_bus,
+                    mask_dict,
                 )
+                
+                # Handle output based on task type
+                if self.task == "ForecastOPF":
+                    # Keep model predictions for all 5 features (don't override with physics)
+                    output_temp = bus_temp.clone()
+                else:
+                    # Use physics decoder output (overrides predictions with physics-derived values)
+                    output_temp = physics_output
+                
+                # Compute residuals for physics-informed training (shared for all tasks)
                 residual_P, residual_Q = self.node_residuals_layer(
                     P_in,
                     Q_in,
-                    output_temp,
+                    physics_output,
                     x_dict["bus"],
                 )
 
@@ -279,5 +333,4 @@ class GNS_heterogeneous(nn.Module):
                     dim=-1,
                 ).mean()
                 h_bus = h_bus + self.physics_mlp(bus_residuals)
-
         return {"bus": output_temp, "gen": gen_temp}

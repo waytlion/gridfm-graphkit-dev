@@ -47,10 +47,10 @@ Output (t+1): Complete OPF state at next timestep
             - Generation: [P_g] (optimal dispatch)
 ```
 
-**Success Criteria:**
-- ✅ Accurate load forecasts (low MAE on P_d, Q_d)
-- ✅ Physically feasible predictions (power balance satisfied)
-- ✅ Near-optimal dispatch (low cost, respects limits)
+**3 Objectives:**
+- Accurate load forecasts (low MAE on P_d, Q_d)
+- Physically feasible predictions (minimize physical error term)
+- optimal dispatch (low gen cost)
 
 ---
 
@@ -78,8 +78,6 @@ Output: [num_gen, 1]   # Active power: [P_g]
                        # Index: [0]
 Static features (not predicted): limits [P_min, P_max], costs [C0, C1, C2]
 ```
-
-**Rationale:** Generator Q_g (reactive power) is captured at bus level (QG_H in bus features). Generators primarily control active power (P_g).
 
 ### 2.3 Masking Strategy
 
@@ -126,13 +124,6 @@ loss_weights:
    - Reactive power balance: sum(Q_g) - sum(Q_d) - Q_losses = 0
    - Layered penalties (early GNN layers penalized more)
 
-**NOT included (for now):**
-- ❌ Constraint violation penalties (voltage/thermal limits)
-  - Reason: Targets are OPF-solved (always feasible), model has sigmoid bounds
-- ❌ Economic cost in loss function
-  - Reason: MSE on P_g implicitly learns optimal dispatch from training data
-  - Cost will be tracked as metric, not used in loss
-
 ### 2.5 Model Architecture
 
 **Use existing:** `GNS_heterogeneous` (no changes needed)
@@ -153,164 +144,6 @@ model:
 ```
 
 **Keep sigmoid bounds:** Ensures predictions respect physical limits (V ∈ [0.9, 1.1], P_g ∈ [P_min, P_max])
-
----
-
-## 3. Design Decisions & Reasoning
-
-### Decision 1: Full Masks (all True) vs. Empty Masks (all False)
-
-**Chosen:** Full masks (all True)
-
-**Reasoning:**
-- Model's mask mechanism: `mask=True` uses prediction, `mask=False` uses ground truth
-- For forecast task: want model to predict everything, so all masks = True
-- Empty masks would bypass model predictions entirely
-
-**Alternative considered:**
-- Make masks optional in model (`mask_dict=None`)
-- **Rejected:** Would require core model changes affecting all tasks
-
-**Implementation:** Create `CreateFullMasks` transform
-
----
-
-### Decision 2: Loss Granularity - Simple vs. Detailed
-
-**Chosen:** Simple (bus + gen + physics)
-
-**Reasoning:**
-- Computational overhead negligible (<0.1% training time)
-- Start simple to iterate faster
-- Can add granular weights later (separate load/voltage/generation) if needed
-
-**Alternative considered:**
-- Separate losses for [load_MSE, voltage_MSE, generation_MSE, physics]
-- **Rejected for now:** More complexity, would need to hardcode feature indices
-- **Future option:** Code structured to easily add this later
-
-**Current structure allows future enhancement without major refactoring**
-
----
-
-### Decision 3: Predict Only P_g for Generators, Not Q_g
-
-**Chosen:** `output_gen_dim = 1` (only P_g)
-
-**Reasoning:**
-- Matches existing OPF architecture
-- Q_g (reactive generation) is captured at bus level (QG_H in bus features, index 2)
-- Generators control active power; reactive power determined by voltage control
-- Consistent with power systems convention
-
-**Alternative considered:**
-- Predict both P_g and Q_g at generator level
-- **Rejected:** Would require restructuring how reactive power is handled throughout codebase
-
----
-
-### Decision 4: Task Inheritance - BaseTask vs. OptimalPowerFlowTask
-
-**Chosen:** Inherit from `BaseTask`
-
-**Reasoning:**
-- Forecast task fundamentally different (no masking, predict loads)
-- Clean separation easier to maintain long-term
-- Avoid inheriting mask-specific behavior from OPF task
-- More explicit control over what we implement
-
-**Alternative considered:**
-- Inherit from `OptimalPowerFlowTask` and override methods
-- **Rejected:** 
-  - OPF task's `shared_step()` assumes masking
-  - Would need many overrides, defeating purpose of inheritance
-  - Risk of hidden inherited behavior causing bugs
-
-**Approach:** Copy needed code from OPF task (model init, metrics) but build cleanly on BaseTask
-
----
-
-### Decision 5: Reuse Existing LayeredWeightedPhysics Loss
-
-**Chosen:** Use `LayeredWeightedPhysics` as-is
-
-**Reasoning:**
-- Already implements power balance for active + reactive power
-- Layered penalties help GNN learn physics constraints progressively
-- Confirmed: Does NOT filter by masks (works for forecast task)
-- No need to reinvent the wheel
-
-**Verified:** Physics loss computes `sum(P_g) - sum(P_d) - losses` without mask filtering
-
----
-
-### Decision 6: No Constraint Violation Loss (For Now)
-
-**Chosen:** Do NOT add voltage/thermal limit penalties to loss
-
-**Reasoning:**
-- Training targets are OPF-solved (always feasible)
-- Model has sigmoid bounds enforcing limits
-- MSE on feasible targets → model learns feasible space
-- Constraint violations unlikely
-
-**Will track as metrics:** Log violations during training/testing, add to loss only if violations observed
-
-**Alternative considered:**
-- Explicit penalty: `loss += λ * max(0, V - V_max)`
-- **Rejected for now:** Added complexity, likely unnecessary given architecture
-
----
-
-### Decision 7: No Economic Cost in Loss Function
-
-**Chosen:** Do NOT include generation cost in loss
-
-**Reasoning:**
-1. **Implicit learning:** MSE on P_g + OPF-solved targets → model learns optimal dispatch patterns
-2. **Data covers diverse scenarios:** Training includes many load patterns → economic principles learned implicitly
-3. **Cost coefficients are input features:** Model sees [C0, C1, C2] → can learn "high cost → produce less"
-
-**Will track as metric:** Log predicted cost vs. target cost for monitoring
-
-**Analysis:**
-```
-If target shows: Load increase → cheap gen ramps up, expensive gen limited
-Model learns pattern via MSE: Match the P_g distribution
-Result: Economically reasonable dispatch (without explicit cost loss)
-```
-
-**Future option:** If test set shows poor economic performance on unseen load patterns, can add small cost penalty (λ=0.05)
-
----
-
-### Decision 8: Equal Loss Weights Initially
-
-**Chosen:** `w_bus = w_gen = w_physics = 0.33`
-
-**Reasoning:**
-- No prior knowledge about which component should dominate
-- Physics loss ensures feasibility
-- Feature MSE ensures accuracy
-- Start balanced, tune based on experiments
-
-**Tuning strategy:**
-- If power imbalance observed → increase `w_physics`
-- If load forecasts poor → increase `w_bus`
-- If dispatch suboptimal → increase `w_gen`
-
----
-
-### Decision 9: Input Dimensions - 6 Generator Features
-
-**Chosen:** `input_gen_dim = 6` (not 7)
-
-**Reasoning:**
-- Matches existing OPF configuration
-- `G_ON` (generator on/off flag) may be excluded or always 1 in preprocessed data
-- Consistency with existing codebase
-
-**Note:** If future data includes 7 features, easy config change
 
 ---
 
@@ -929,6 +762,9 @@ def test_vs_persistence_model():
 
 ### 6.1 Potential Enhancements
 
+**Input History window (t-n)**
+- concat to one graph -> feed in to predict t+1
+
 **Loss Granularity:**
 - Separate weights for load, voltage, generation
 - Allows emphasizing load forecasting vs. dispatch optimization
@@ -939,20 +775,11 @@ def test_vs_persistence_model():
 - Helps generalization to unseen load patterns
 - Formula: `loss += λ * |predicted_cost - target_cost|`
 
-**Constraint Violation Penalties:**
-- If voltage/thermal violations observed in predictions
-- Add explicit penalties to loss function
-- Soft constraints: `loss += λ * max(0, V - V_max)²`
 
 **Multi-step Forecasting:**
 - Predict multiple timesteps: t+1, t+2, ..., t+k
 - Requires model architecture changes (recurrent or autoregressive)
 - Loss over all timesteps
-
-**Uncertainty Quantification:**
-- Model prediction uncertainty (e.g., dropout, ensembles)
-- Output: mean ± confidence intervals
-- Useful for risk-aware dispatch decisions
 
 ### 6.2 Monitoring During Training
 
@@ -1017,71 +844,7 @@ def test_vs_persistence_model():
 
 ---
 
-## 7. Summary Checklist
-
-### Before Coding (Step 3):
-- ✅ Design decisions documented with reasoning
-- ✅ All components identified (transforms, task, losses)
-- ✅ File structure planned
-- ✅ Component interactions mapped
-- ✅ Testing strategy defined
-
-### During Implementation:
-- [ ] Create `CreateFullMasks` transform
-- [ ] Create `ForecastOPFTransforms` class
-- [ ] Create `ForecastOPFTask` class
-- [ ] Register task and transform in registries
-- [ ] Modify `cli.py` for datamodule selection
-- [ ] Create config file
-- [ ] Write unit tests
-- [ ] Write integration tests
-
-### After Implementation:
-- [ ] Run tests (all passing)
-- [ ] Train on small data (smoke test)
-- [ ] Train full model
-- [ ] Evaluate metrics
-- [ ] Generate visualizations
-- [ ] Document results
-- [ ] Tune hyperparameters if needed
-
----
-
 ## Appendix: Quick Reference
-
 ### Feature Indices (from globals.py)
-
-**Bus:**
-```python
-PD_H = 0      # Active load
-QD_H = 1      # Reactive load
-QG_H = 2      # Reactive generation
-VM_H = 3      # Voltage magnitude
-VA_H = 4      # Voltage angle
-PQ_H = 5      # PQ bus flag
-PV_H = 6      # PV bus flag
-REF_H = 7     # Reference bus flag
-# ... limits and static features 8-14
-```
-
-**Generator:**
-```python
-PG_H = 0      # Active power
-MIN_PG = 1    # Min limit
-MAX_PG = 2    # Max limit
-C0_H = 3      # Cost coefficient
-C1_H = 4      # Cost coefficient
-C2_H = 5      # Cost coefficient
-```
-
-### Command to Run
-
-```bash
-python -m gridfm_graphkit train \
-    --config examples/config/HGNS_ForecastOPF_case14.yaml \
-    --data_path data/
-```
-
----
 
 **End of Implementation Plan**
