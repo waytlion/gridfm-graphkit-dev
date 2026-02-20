@@ -10,7 +10,7 @@ data:
   - 250000
   test_ratio: 0.1
   val_ratio: 0.1
-  workers: 32
+  workers: 0
   split_by_load_scenario_idx: true
 model:
   attention_head: 8
@@ -29,8 +29,8 @@ optimizer:
   lr_decay: 0.7
   lr_patience: 5
 training:
-  batch_size: 64
-  epochs: 200
+  batch_size: 8
+  epochs: 10
   loss_weights:
   - 0.1
   - 0.1
@@ -43,8 +43,8 @@ training:
   - base_weight: 0.5
   - {}
   - {}
-  accelerator: auto
-  devices: auto
+  accelerator: "cpu"
+  devices: 1
   strategy: auto
 seed: 0
 verbose: true
