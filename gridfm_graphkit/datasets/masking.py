@@ -161,7 +161,7 @@ class AddOPFForecastingMask(BaseTransform):
     Static features (bus type, limits, etc.) are kept from ground truth.
     """
     
-    def forward(self, data: HeteroData) -> HeteroData:
+    def forward(self, data):
         # Get feature tensors
         bus_x = data.x_dict["bus"]
         gen_x = data.x_dict["gen"]
