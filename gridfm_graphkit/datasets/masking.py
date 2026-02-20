@@ -155,6 +155,51 @@ class AddOPFHeteroMask(BaseTransform):
 
         return data
 
+class AddOPFForecastingMask(BaseTransform):
+    """
+    Creates mask for forecasting task - only dynamic features should be predicted.
+    Static features (bus type, limits, etc.) are kept from ground truth.
+    """
+    
+    def forward(self, data: HeteroData) -> HeteroData:
+        # Get feature tensors
+        bus_x = data.x_dict["bus"]
+        gen_x = data.x_dict["gen"]
+        branch_attr = data.edge_attr_dict[("bus", "connects", "bus")]
+        
+        # Create masks - initially all False
+        mask_bus = torch.zeros_like(bus_x, dtype=torch.bool)
+        mask_gen = torch.zeros_like(gen_x, dtype=torch.bool)
+        mask_branch = torch.zeros_like(branch_attr, dtype=torch.bool)
+        
+        # Set True only for DYNAMIC features we want to predict
+        mask_bus[:, PD_H] = True   # Predict active power demand
+        mask_bus[:, QD_H] = True   # Predict reactive power demand
+        mask_bus[:, QG_H] = True   # Predict reactive generation
+        mask_bus[:, VM_H] = True   # Predict voltage magnitude
+        mask_bus[:, VA_H] = True   # Predict voltage angle
+        
+        mask_gen[:, PG_H] = True   # Predict active power generation
+        
+        # Static features remain False (use ground truth, don't predict)
+        # e.g., bus_x[:, PQ_H], bus_x[:, PV_H], bus_x[:, MIN_VM_H], etc.
+        
+        # Bus type flags (for physics decoder logic)
+        mask_PQ = bus_x[:, PQ_H] == 1
+        mask_PV = bus_x[:, PV_H] == 1
+        mask_REF = bus_x[:, REF_H] == 1
+        
+        # Store masks
+        data.mask_dict = {
+            "bus": mask_bus,      # [num_bus, 15] with 5 True, 10 False
+            "gen": mask_gen,      # [num_gen, 6] with 1 True, 5 False
+            "branch": mask_branch,
+            "PQ": mask_PQ,
+            "PV": mask_PV,
+            "REF": mask_REF,
+        }
+        
+        return data
 
 class BusToGenBroadcaster(MessagePassing):
     def __init__(self, aggr="add"):

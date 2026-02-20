@@ -81,6 +81,23 @@ def compute_shunt_power(bus_data_pred, bus_data_orig):
 
 @PHYSICS_DECODER_REGISTRY.register("OptimalPowerFlow")
 class PhysicsDecoderOPF(nn.Module):
+    """
+    Physics decoder for OPF task.
+
+    Derives reactive generation (Qg) from power balance equations for PV/REF buses.
+    Ensures predictions satisfy nodal power balance: Qg = Q_in + Qd - q_shunt
+
+    Args:
+        P_in: Active power injections per bus [N_bus]
+        Q_in: Reactive power injections per bus [N_bus]
+        bus_data_pred: Predicted bus features [N_bus, 2] containing [Vm, Va]
+        bus_data_orig: Original bus features [N_bus, 15] (loads, limits, etc.)
+        agg_bus: Aggregated Pg per bus [N_bus]
+        mask_dict: Bus type masks {"PV": ..., "REF": ..., "PQ": ...}
+
+    Returns:
+        [N_bus, 4] tensor: [Vm, Va, Pg, Qg] where Qg is physics-derived
+    """
     def forward(self, P_in, Q_in, bus_data_pred, bus_data_orig, agg_bus, mask_dict):
         mask_pv = mask_dict["PV"]
         mask_ref = mask_dict["REF"]

@@ -8,6 +8,7 @@ from gridfm_graphkit.datasets.transforms import (
 from gridfm_graphkit.datasets.masking import (
     AddOPFHeteroMask,
     AddPFHeteroMask,
+    AddOPFForecastingMask,
     SimulateMeasurements,
 )
 from gridfm_graphkit.io.registries import TRANSFORM_REGISTRY
@@ -40,6 +41,24 @@ class OptimalPowerFlowTransforms(Compose):
         # Pass the list of transforms to Compose
         super().__init__(transforms)
 
+@TRANSFORM_REGISTRY.register("ForecastOPF")
+class ForecastOPFTransforms(Compose):
+    """
+    Transform for forecast OPF task - no feature masking.
+    All features visible at time t, all features predicted at time t+1.
+    """
+    
+    def __init__(self, args):
+        transforms = []
+
+        transforms.append(RemoveInactiveBranches())
+        transforms.append(RemoveInactiveGenerators())
+        transforms.append(AddOPFForecastingMask()) # Tells model which features to predict (they get set to 1/true)
+        #! No ApplyMasking(), because ApplyMasking() determines, which input data the model sees -> If we were to do apply Masking, the model would not see all input features
+        # transforms.append(ApplyMasking(args=args))
+
+        # Pass the list of transforms to Compose
+        super().__init__(transforms)
 
 @TRANSFORM_REGISTRY.register("StateEstimation")
 class StateEstimationTransforms(Compose):
