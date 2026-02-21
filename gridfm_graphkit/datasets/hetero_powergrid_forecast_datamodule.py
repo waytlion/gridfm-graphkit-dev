@@ -17,8 +17,6 @@ import random
 import warnings
 import os
 import lightning as L
-
-
 from gridfm_graphkit.datasets.hetero_powergrid_datamodule import LitGridHeteroDataModule
 from gridfm_graphkit.datasets.powergrid_hetero_forecast_dataset import HeteroGridForecastDatasetDisk
 
@@ -27,7 +25,9 @@ class LitGridHeteroForecastDataModule(LitGridHeteroDataModule):
     DataModule for one-step-ahead forecasting.
     
     Inherits all data loading from LitGridHeteroDataModule.
-    Only difference: Uses HeteroGridForecastDatasetDisk instead of HeteroGridForecastDatasetDisk.
+    Differences:
+     1.  Uses HeteroGridForecastDatasetDisk instead of HeteroGridForecastDatasetDisk.
+     2. Chronological Data Split
     """
     
     def setup(self, stage: str):
@@ -84,9 +84,19 @@ class LitGridHeteroForecastDataModule(LitGridHeteroDataModule):
 
             dataset = Subset(dataset, subset_indices)
 
-            # Random seed set before every split, same as above
             np.random.seed(self.args.seed)
-            if self.split_by_load_scenario_idx:
+
+            #! NEW: Check for temporal forecasting split flag
+            if getattr(self.args.data, 'temporal_split', False):
+                from gridfm_graphkit.datasets.utils import split_dataset_by_time
+                train_dataset, val_dataset, test_dataset = split_dataset_by_time(
+                    dataset,
+                    self.data_dir,
+                    load_scenarios,
+                    self.args.data.val_ratio,
+                    self.args.data.test_ratio,
+                )
+            elif self.split_by_load_scenario_idx:
                 train_dataset, val_dataset, test_dataset = (
                     split_dataset_by_load_scenario_idx(
                         dataset,
