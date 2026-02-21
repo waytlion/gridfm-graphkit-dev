@@ -6,7 +6,7 @@
 
 ---
 
-## Table of Contents
+## Table of Contents 
 1. [High-Level Goal](#1-high-level-goal)
 2. [Abstract Requirements](#2-abstract-requirements)
 3. [Design Decisions & Reasoning](#3-design-decisions--reasoning)
@@ -16,6 +16,8 @@
 
 ---
 
+## 0. Questions:
+- model: Should rlly predict Qg when it gets completly overwritten by physics decoder? 
 ## 1. High-Level Goal
 
 ### What We're Building
@@ -41,12 +43,19 @@ Input (t):  Complete OPF state
             ↓
 Model:      GNN learns temporal patterns + OPF principles
             ↓
-Output (t+1): Complete OPF state at next timestep
-            - Loads: [P_d, Q_d] (forecasted)
-            - Voltages: [V_m, V_a] (optimal for forecasted loads)
-            - Generation: [P_g] (optimal dispatch)
+Output (t+1): 
+| Feature | Location | Predicted? | Physics-Corrected? | Why                           |
+|----------|----------|------------|--------------------|------------------------------|
+| Pd       | Bus      | Yes        | No                 | Exogenous load                |
+| Qd       | Bus      | Yes        | No                 | Exogenous load                |
+| Qg       | Bus      | Initially  | Yes (replaced)     | Derived from power balance    |
+| Vm       | Bus      | Yes        | Optional           | Can be physics-corrected      |
+| Va       | Bus      | Yes        | Optional           | Can be physics-corrected      |
+| Pg       | Gen      | Yes        | No                 | Dispatch decision             |
 ```
 
+
+Gen (Pg): 
 **3 Objectives:**
 - Accurate load forecasts (low MAE on P_d, Q_d)
 - Physically feasible predictions (minimize physical error term)

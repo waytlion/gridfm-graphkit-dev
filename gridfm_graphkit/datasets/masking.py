@@ -159,6 +159,7 @@ class AddOPFForecastingMask(BaseTransform):
     """
     Creates mask for forecasting task - only dynamic features should be predicted.
     Static features (bus type, limits, etc.) are kept from ground truth.
+    #! This mask is not used to mask input features (ApplyMasking() is skipped)
     """
     
     def forward(self, data: HeteroData) -> HeteroData:
@@ -172,18 +173,15 @@ class AddOPFForecastingMask(BaseTransform):
         mask_gen = torch.zeros_like(gen_x, dtype=torch.bool)
         mask_branch = torch.zeros_like(branch_attr, dtype=torch.bool)
         
-        # Set True only for DYNAMIC features we want to predict
-        mask_bus[:, PD_H] = True   # Predict active power demand
-        mask_bus[:, QD_H] = True   # Predict reactive power demand
-        mask_bus[:, QG_H] = True   # Predict reactive generation
-        mask_bus[:, VM_H] = True   # Predict voltage magnitude
-        mask_bus[:, VA_H] = True   # Predict voltage angle
+        # predict dynmaic features
+        mask_bus[:, PD_H] = True   
+        mask_bus[:, QD_H] = True   
+        mask_bus[:, QG_H] = True 
+        mask_bus[:, VM_H] = True 
+        mask_bus[:, VA_H] = True 
         
-        mask_gen[:, PG_H] = True   # Predict active power generation
-        
-        # Static features remain False (use ground truth, don't predict)
-        # e.g., bus_x[:, PQ_H], bus_x[:, PV_H], bus_x[:, MIN_VM_H], etc.
-        
+        mask_gen[:, PG_H] = True  
+
         # Bus type flags (for physics decoder logic)
         mask_PQ = bus_x[:, PQ_H] == 1
         mask_PV = bus_x[:, PV_H] == 1
