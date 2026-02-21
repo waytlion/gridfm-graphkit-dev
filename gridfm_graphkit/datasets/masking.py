@@ -162,7 +162,7 @@ class AddOPFForecastingMask(BaseTransform):
     #! This mask is not used to mask input features (ApplyMasking() is skipped)
     """
     
-    def forward(self, data: HeteroData) -> HeteroData:
+    def forward(self, data):
         # Get feature tensors
         bus_x = data.x_dict["bus"]
         gen_x = data.x_dict["gen"]
