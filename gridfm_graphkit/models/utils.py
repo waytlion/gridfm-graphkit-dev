@@ -180,9 +180,6 @@ class PhysicsDecoderPF(nn.Module):
 
         return output
 
-@PHYSICS_DECODER_REGISTRY.register("ForecastOPF")
-class PhysicsDecoderForecastOPF(PhysicsDecoderOPF):
-    pass
 
 @PHYSICS_DECODER_REGISTRY.register("StateEstimation")
 class PhysicsDecoderSE(nn.Module):
