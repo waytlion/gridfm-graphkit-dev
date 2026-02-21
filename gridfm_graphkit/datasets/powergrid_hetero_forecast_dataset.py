@@ -135,13 +135,13 @@ class HeteroGridForecastDatasetDisk(HeteroGridDatasetDisk):
             #! timestep t+1
             next_bus_df = bus_groups.get_group(next_scenario).reset_index()
             data["bus"].y = torch.tensor(
-                next_bus_df[bus_features].values[:, : (VA_H + 1)],
+                next_bus_df[bus_features].values[:, : 5],
                 dtype=torch.float
             )
             
             next_gen_df = gen_groups.get_group(next_scenario).reset_index()
             data["gen"].y = torch.tensor(
-                next_gen_df[gen_features].values[:, : (PG_H + 1)],
+                next_gen_df[gen_features].values[:, : 1],
                 dtype=torch.float
             )
 

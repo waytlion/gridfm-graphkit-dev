@@ -1,28 +1,33 @@
-
-import os
+import torch
+from torch_geometric.loader import DataLoader
+from torch.utils.data import ConcatDataset
+from torch.utils.data import Subset
+import torch.distributed as dist
+from gridfm_graphkit.io.param_handler import (
+    NestedNamespace,
+    load_normalizer,
+    get_task_transforms,
+)
+from gridfm_graphkit.datasets.utils import (
+    split_dataset,
+    split_dataset_by_load_scenario_idx,
+)
+import numpy as np
 import random
 import warnings
-import numpy as np
-import torch
-import torch.distributed as dist
+import os
 import lightning as L
-from torch.utils.data import DataLoader, ConcatDataset, Subset
-
 from gridfm_graphkit.datasets.hetero_powergrid_datamodule import LitGridHeteroDataModule
 from gridfm_graphkit.datasets.powergrid_hetero_forecast_dataset import HeteroGridForecastDatasetDisk
-from gridfm_graphkit.datasets.normalizers import load_normalizer
-from gridfm_graphkit.tasks.task_transforms import get_task_transforms
 
-# Check if these exist in utils.py:
-from gridfm_graphkit.datasets.utils import split_dataset
-# If split_by_load_scenario_idx exists:
-from gridfm_graphkit.datasets.utils import split_dataset_by_load_scenario_idx
 class LitGridHeteroForecastDataModule(LitGridHeteroDataModule):
     """
     DataModule for one-step-ahead forecasting.
     
     Inherits all data loading from LitGridHeteroDataModule.
-    Only difference: Uses HeteroGridForecastDatasetDisk instead of HeteroGridForecastDatasetDisk.
+    Differences:
+     1.  Uses HeteroGridForecastDatasetDisk instead of HeteroGridForecastDatasetDisk.
+     2. Chronological Data Split
     """
     
     def setup(self, stage: str):
@@ -79,9 +84,19 @@ class LitGridHeteroForecastDataModule(LitGridHeteroDataModule):
 
             dataset = Subset(dataset, subset_indices)
 
-            # Random seed set before every split, same as above
             np.random.seed(self.args.seed)
-            if self.split_by_load_scenario_idx:
+
+            #! NEW: Check for temporal forecasting split flag
+            if getattr(self.args.data, 'temporal_split', False):
+                from gridfm_graphkit.datasets.utils import split_dataset_by_time
+                train_dataset, val_dataset, test_dataset = split_dataset_by_time(
+                    dataset,
+                    self.data_dir,
+                    load_scenarios,
+                    self.args.data.val_ratio,
+                    self.args.data.test_ratio,
+                )
+            elif self.split_by_load_scenario_idx:
                 train_dataset, val_dataset, test_dataset = (
                     split_dataset_by_load_scenario_idx(
                         dataset,

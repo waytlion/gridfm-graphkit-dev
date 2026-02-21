@@ -1,4 +1,5 @@
 from gridfm_graphkit.datasets.hetero_powergrid_datamodule import LitGridHeteroDataModule
+from gridfm_graphkit.datasets.hetero_powergrid_forecast_datamodule import LitGridHeteroForecastDataModule
 from gridfm_graphkit.io.param_handler import NestedNamespace
 from gridfm_graphkit.training.callbacks import SaveBestModelStateDict
 import numpy as np
@@ -54,7 +55,12 @@ def main_cli(args):
     random.seed(config_args.seed)
     np.random.seed(config_args.seed)
 
-    litGrid = LitGridHeteroDataModule(config_args, args.data_path)
+    #  Check if forecast task
+    if config_args.task.task_name in ["ForecastOPF"]:
+        litGrid = LitGridHeteroForecastDataModule(config_args, args.data_path)
+    else:
+        litGrid = LitGridHeteroDataModule(config_args, args.data_path)
+    
     model = get_task(config_args, litGrid.data_normalizers)
     if args.command != "train":
         print(f"Loading model weights from {args.model_path}")
