@@ -79,6 +79,7 @@ class RemoveInactiveBranches(BaseTransform):
 class ApplyMasking(BaseTransform):
     """
     Apply masking to data
+    #! Masking value is often 0 (see config)
     """
 
     def __init__(self, args):
