@@ -7,9 +7,9 @@ data:
   networks:
   - case14_ieee
   scenarios:
-  - 250000
-  test_ratio: 0.1
-  val_ratio: 0.1
+  - 26280 #3yrs
+  test_ratio: 0.15
+  val_ratio: 0.15
   workers: 32
   split_by_load_scenario_idx: true
   temporal_split: true  
