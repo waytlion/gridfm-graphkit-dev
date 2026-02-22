@@ -549,16 +549,58 @@ class ForecastOPFTask(OptimalPowerFlowTask):
     @rank_zero_only
     def on_test_end(self):
         """
-        SAME: Inherit OPF plotting and CSV generation.
-        
-        Could add forecast-specific plots here (load scatter plots),
+        EXTENDED: Add forecast-specific CSV , then call parent.
         """
-        # Call parent's on_test_end (reuse all OPF plots and CSVs)
-        super().on_test_end()
+        # Get artifact directory (SAME as OPF line 274-283) ===
+        if isinstance(self.logger, MLFlowLogger):
+            artifact_dir = os.path.join(
+                self.logger.save_dir,
+                self.logger.experiment_id,
+                self.logger.run_id,
+                "artifacts",
+            )
+        else:
+            artifact_dir = self.logger.save_dir
         
-        # TODO: Add forecast-specific plots
-        # - Scatter: predicted vs actual Pd, Qd
-        # - Timeseries: if sequential test data available
+        # Collect metrics (SAME as OPF line 285-296) 
+        final_metrics = self.trainer.callback_metrics
+        grouped_metrics = {}
+        
+        for full_key, value in final_metrics.items():
+            try:
+                value = value.item()
+            except AttributeError:
+                pass
+            
+            if "/" in full_key:
+                dataset_name, metric = full_key.split("/", 1)
+                if dataset_name not in grouped_metrics:
+                    grouped_metrics[dataset_name] = {}
+                grouped_metrics[dataset_name][metric] = value
+        
+        # Create forecast CSV
+        for dataset, metrics in grouped_metrics.items():
+            data_forecast = {
+                "Feature": ["Pd", "Qd", "Pg", "Qg", "Vm", "Va"],
+                "MAE": [
+                    metrics.get("MAE Pd (MW)", float("nan")),
+                    metrics.get("MAE Qd (MVar)", float("nan")),
+                    metrics.get("MAE Pg (MW)", float("nan")),
+                    metrics.get("MAE Qg (MVar)", float("nan")),
+                    metrics.get("MAE Vm (p.u.)", float("nan")),
+                    metrics.get("MAE Va (rad)", float("nan")),
+                ],
+            }
+            df_forecast = pd.DataFrame(data_forecast)
+            
+            test_dir = os.path.join(artifact_dir, "test")
+            os.makedirs(test_dir, exist_ok=True)
+            forecast_csv_path = os.path.join(test_dir, f"{dataset}_forecast_MAE.csv")
+            df_forecast.to_csv(forecast_csv_path, index=False)
+        
+        
+        # ===  Call parent to generate OPF metrics/plots ===
+        super().on_test_end()
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         """SAME: Not implemented (inherited from OPF)"""
