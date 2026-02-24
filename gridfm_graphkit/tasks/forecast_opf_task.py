@@ -79,16 +79,13 @@ class ForecastOPFTask(OptimalPowerFlowTask):
 
     def shared_step(self, batch, stage="train"):
         """
-        CHANGED: Custom loss computation on all 5 predicted features.
-        
-        Why override: Parent's MaskedBusMSE only computes loss on [Vm, Va] 
-                    for non-OPF tasks. We need loss on all 5: [Pd, Qd, Qg, Vm, Va].
-        
+        Custom loss computation on all 5 predicted features (OF only on 2).
+
         Returns:
             output: Model predictions
             loss_dict: Dictionary of loss components
         """
-        # DEBUG: Print shapes on first call
+        #* DEBUG: Print shapes on first call
         if not hasattr(self, '_debug_printed'):
             print("="*50)
             print("DEBUG: Batch shapes")
@@ -117,12 +114,12 @@ class ForecastOPFTask(OptimalPowerFlowTask):
             print(f"output['gen'].shape: {output['gen'].shape}")
             print("="*50)
             self._output_printed = True
-        # CHANGED: Direct MSE on predicted features
-        # Dataset already filters targets to [Pd, Qd, Qg, Vm, Va] (5 features)
+
+        # CHANGED: MSE on predicted features
         loss_bus = F.mse_loss(output["bus"], batch.y_dict["bus"])  # [N,5] vs [N,5]
         loss_gen = F.mse_loss(output["gen"], batch.y_dict["gen"])  # [M,1] vs [M,1]
         
-        # SAME: Get physics loss from MixedLoss
+        # Get physics loss from MixedLoss
         # self.loss_fn is MixedLoss containing [LayeredWeightedPhysics, MaskedGenMSE, MaskedBusMSE]
         all_losses = self.loss_fn(
             output,
@@ -132,16 +129,12 @@ class ForecastOPFTask(OptimalPowerFlowTask):
             batch.mask_dict,
             model=self.model,
         )
+        loss_physics = all_losses.get("Layered Weighted Physics Loss")
         
-        # Extract physics loss (if present)
-        # MixedLoss returns {"loss": weighted_sum, "Layered Weighted Physics Loss": value, ...}
-        loss_physics = all_losses.get("Layered Weighted Physics Loss", 0.0)
-        
-        # CHANGED: Use our custom bus/gen MSE, but keep physics from config
-        w_physics = self.args.training.loss_weights[0]  # 0.1
-        w_gen = self.args.training.loss_weights[1]      # 0.1
-        w_bus = self.args.training.loss_weights[2]      # 0.8
-        
+        # Use bus/gen MSE over all predicted features and but keep physics from config
+        w_physics = self.args.training.loss_weights[0]  
+        w_gen = self.args.training.loss_weights[1]      
+        w_bus = self.args.training.loss_weights[2]      
         total_loss = w_bus * loss_bus + w_gen * loss_gen + w_physics * loss_physics
         
         # Build loss dictionary
@@ -149,10 +142,9 @@ class ForecastOPFTask(OptimalPowerFlowTask):
             "loss": total_loss,
             "loss_bus": loss_bus.detach(),
             "loss_gen": loss_gen.detach(),
+            "loss_physics": loss_physics.detach() 
         }
-        if loss_physics > 0:
-            loss_dict["loss_physics"] = loss_physics if isinstance(loss_physics, float) else loss_physics.detach()
-        
+
         # Log losses
         for key, value in loss_dict.items():
             self.log(
@@ -166,7 +158,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
 
     def _convert_to_opf_format(self, output, batch):
         """
-        NEW METHOD: Convert ForecastOPF output to OPF format for metrics reuse.
+        Convert ForecastOPF output to OPF format for metrics reuse.
         
         ForecastOPF output: [Pd, Qd, Qg, Vm, Va] (5 features)
         OPF expected:       [Vm, Va, Pg_agg, Qg] (4 features)
@@ -178,10 +170,10 @@ class ForecastOPFTask(OptimalPowerFlowTask):
         Returns:
             output_opf: OPF-format predictions {"bus": [N, 4], "gen": [M, 1]}
         """
-        pred_bus = output["bus"]  # [num_bus, 5] = [Pd, Qd, Qg, Vm, Va]
-        pred_gen = output["gen"]  # [num_gen, 1] = [Pg]
+        pred_bus = output["bus"]  # [num_bus, 5] 
+        pred_gen = output["gen"]  # [num_gen, 1] 
         
-        # Aggregate generator Pg to buses (SAME as OPF line 93-99)
+        #SAME: Aggregate generator Pg to buses
         _, gen_to_bus_index = batch.edge_index_dict[("gen", "connected_to", "bus")]
         num_bus = pred_bus.size(0)
         agg_pg = scatter_add(
@@ -206,7 +198,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
 
     def _convert_target_to_opf_format(self, batch):
         """
-        NEW METHOD: Convert ForecastOPF targets to OPF format.
+        Convert ForecastOPF targets to OPF format.
         
         Same logic as _convert_to_opf_format but for ground truth.
         """
@@ -236,23 +228,23 @@ class ForecastOPFTask(OptimalPowerFlowTask):
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         """
-        CHANGED: Add load forecast metrics + convert format for OPF metrics.
+        Add load forecast metrics + convert format for OPF metrics.
         
         Structure:
         1. Get predictions and denormalize (SAME as OPF)
         2. NEW: Log load forecast accuracy (MAE for Pd, Qd)
         3. NEW: Convert output/target to OPF format
-        4. REUSE: All OPF metrics (copy lines 60-261 from opf_task.py)
+        4. REUSE: All OPF metrics (copy from opf_task.py)
         5. SAME: Store outputs for plotting
         """
-        # === SECTION 1: Prediction and Denormalization (SAME as OPF lines 60-65) ===
+        #1: Prediction and Denormalization (SAME as OPF)
         output, loss_dict = self.shared_step(batch, stage="test")
         dataset_name = self.args.data.networks[dataloader_idx]
 
         self.data_normalizers[dataloader_idx].inverse_transform(batch)
         self.data_normalizers[dataloader_idx].inverse_output(output)
 
-        # === SECTION 2: NEW - Load Forecast Metrics ===
+        #2: NEW - Load Forecast Metrics
         pred_bus = output["bus"]  # [Pd, Qd, Qg, Vm, Va]
         target_bus = batch.y_dict["bus"]
         
@@ -310,12 +302,12 @@ class ForecastOPFTask(OptimalPowerFlowTask):
             sync_dist=True,
         )
 
-        # === SECTION 3: NEW - Convert to OPF Format ===
+        # 3: NEW - Convert to OPF Format 
         output_opf = self._convert_to_opf_format(output, batch)
         target_opf = self._convert_target_to_opf_format(batch)
 
-        # === SECTION 4: REUSE - All OPF Metrics (copy from opf_task.py lines 67-261) ===
-        # Physics calculations (SAME as OPF)
+        #4: REUSE - All OPF Metrics (copy from opf_task.pyy)
+        # Physics calculations
         branch_flow_layer = ComputeBranchFlow()
         node_injection_layer = ComputeNodeInjection()
         node_residuals_layer = ComputeNodeResiduals()
@@ -347,14 +339,14 @@ class ForecastOPFTask(OptimalPowerFlowTask):
         optimality_gap = torch.mean(torch.abs((cost_pred - cost_gt) / cost_gt * 100))
 
         # CHANGED: Use converted OPF format for physics calculations
-        # Branch flow computation (SAME logic as OPF lines 103-106)
+        # Branch flow computation (SAME logic as OPF)
         Pft, Qft = branch_flow_layer(
             output_opf["bus"],  # Use OPF format [Vm, Va, Pg, Qg]
             bus_edge_index,
             bus_edge_attr,
         )
         
-        # Branch thermal violations (SAME as OPF lines 107-117)
+        # Branch thermal violations (SAME as OPF lines)
         Sft = torch.sqrt(Pft**2 + Qft**2)
         branch_thermal_limits = bus_edge_attr[:, RATE_A]
         branch_thermal_excess = F.relu(Sft - branch_thermal_limits)
@@ -367,7 +359,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
         mean_thermal_violation_forward = torch.mean(forward_excess)
         mean_thermal_violation_reverse = torch.mean(reverse_excess)
 
-        # Branch angle violations (SAME as OPF lines 119-130)
+        # Branch angle violations (SAME as OPF)
         angle_min = bus_edge_attr[:, ANG_MIN]
         angle_max = bus_edge_attr[:, ANG_MAX]
 
@@ -382,7 +374,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
             torch.mean(angle_excess_low + angle_excess_high) * 180.0 / torch.pi
         )
 
-        # Node injections and residuals (SAME as OPF lines 132-138)
+        # Node injections and residuals (SAME as OPF)
         P_in, Q_in = node_injection_layer(Pft, Qft, bus_edge_index, num_bus)
         residual_P, residual_Q = node_residuals_layer(
             P_in,
@@ -391,7 +383,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
             batch.x_dict["bus"],
         )
 
-        # Qg violation checks (SAME as OPF lines 140-156)
+        # Qg violation checks (SAME as OPF)
         Qg_pred = output_opf["bus"][:, QG_OUT]
         Qg_max = batch.x_dict["bus"][:, MAX_QG_H]
         Qg_min = batch.x_dict["bus"][:, MIN_QG_H]
@@ -411,7 +403,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
         mean_Qg_violation_PV = Qg_violation_amount[mask_PV].mean()
         mean_Qg_violation_REF = Qg_violation_amount[mask_REF].mean()
 
-        # Store outputs for plotting (SAME structure as OPF lines 158-209)
+        # Store outputs for plotting (SAME as OpF)
         if self.args.verbose:
             mean_res_P_PQ, max_res_P_PQ = residual_stats_by_type(
                 residual_P,
@@ -475,7 +467,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
                 },
             )
 
-        # Compute residuals (SAME as OPF lines 211-214)
+        # Compute residuals (SAME as OPF)
         final_residual_real_bus = torch.mean(torch.abs(residual_P))
         final_residual_imag_bus = torch.mean(torch.abs(residual_Q))
 
@@ -503,7 +495,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
         mse_PV = mse_PV.mean(dim=0)
         mse_REF = mse_REF.mean(dim=0)
 
-        # Populate loss_dict (SAME as OPF lines 232-261)
+        # Populate loss_dict (SAME as OPF)
         loss_dict["Opt gap"] = optimality_gap
         loss_dict["MSE PG"] = mse_PG[PG_H]
 
@@ -533,7 +525,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
 
         loss_dict["Test loss"] = loss_dict.pop("loss").detach()
         
-        # Log all metrics (SAME as OPF lines 263-271)
+        # Log all metrics (SAME as OPF)
         for metric, value in loss_dict.items():
             metric_name = f"{dataset_name}/{metric}"
             self.log(
@@ -551,7 +543,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
         """
         EXTENDED: Add forecast-specific CSV , then call parent.
         """
-        # Get artifact directory (SAME as OPF line 274-283) ===
+        # Get artifact directory (SAME as OPF)
         if isinstance(self.logger, MLFlowLogger):
             artifact_dir = os.path.join(
                 self.logger.save_dir,
@@ -562,7 +554,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
         else:
             artifact_dir = self.logger.save_dir
         
-        # Collect metrics (SAME as OPF line 285-296) 
+        # Collect metrics (SAME as OPF)
         final_metrics = self.trainer.callback_metrics
         grouped_metrics = {}
         
@@ -599,7 +591,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
             df_forecast.to_csv(forecast_csv_path, index=False)
         
         
-        # ===  Call parent to generate OPF metrics/plots ===
+        #Call parent to generate OPF metrics/plots
         super().on_test_end()
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
