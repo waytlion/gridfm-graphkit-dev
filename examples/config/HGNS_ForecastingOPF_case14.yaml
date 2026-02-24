@@ -33,9 +33,9 @@ training:
   batch_size: 64
   epochs: 200
   loss_weights:
-  - 0.1
-  - 0.1
-  - 0.8
+  - 0.3
+  - 0.3
+  - 0.4
   losses:
   - LayeredWeightedPhysics
   - MaskedGenMSE
