@@ -71,9 +71,9 @@ def split_dataset_by_load_scenario_idx(
     val_load_scenarios = unique_load_scenarios[train_size : train_size + val_size]
     test_load_scenarios = unique_load_scenarios[train_size + val_size :]
 
-    train_indices = torch.nonzero(torch.isin(load_scenarios, train_load_scenarios))
-    val_indices = torch.nonzero(torch.isin(load_scenarios, val_load_scenarios))
-    test_indices = torch.nonzero(torch.isin(load_scenarios, test_load_scenarios))
+    train_indices = torch.nonzero(torch.isin(load_scenarios, train_load_scenarios)).flatten().tolist()
+    val_indices = torch.nonzero(torch.isin(load_scenarios, val_load_scenarios)).flatten().tolist()
+    test_indices = torch.nonzero(torch.isin(load_scenarios, test_load_scenarios)).flatten().tolist()
 
     train_dataset = Subset(dataset, train_indices)
     val_dataset = Subset(dataset, val_indices)

@@ -13,23 +13,15 @@ from gridfm_graphkit.datasets.globals import VA_H, PG_H
 
 class HeteroGridDatasetDisk(Dataset):
     """
-    Abstract:
-        - Loads graph data from disk                
-        - Applies normalization                     
-        - Returns HeteroData objects     
-
-    Detailed Description:
-        A PyTorch Geometric `Dataset` for power grid data stored on disk.
-        This dataset reads node and edge CSV files, applies normalization,
-        and saves each graph separately on disk as a processed file.
-        Data is loaded from disk lazily on demand.
+    A PyTorch Geometric `Dataset` for power grid data stored on disk.
+    This dataset reads node and edge CSV files and saves each graph
+    separately on disk as a processed file. Data is loaded from disk
+    lazily on demand. Normalization is applied at access time via
+    the data_normalizer (which must be fitted externally before iteration).
 
     Args:
         root (str): Root directory where the dataset is stored.
-        norm_method (str): Identifier for normalization method (e.g., "minmax", "standard").
-        data_normalizer (Normalizer): Normalizer used for features.
-        pe_dim (int): Length of the random walk used for positional encoding.
-        mask_dim (int, optional): Number of features per-node that could be masked.
+        data_normalizer (Normalizer): Normalizer used for features (fitted externally by the datamodule).
         transform (callable, optional): Transformation applied at runtime.
         pre_transform (callable, optional): Transformation applied before saving to disk.
         pre_filter (callable, optional): Filter to determine which graphs to keep.
@@ -38,31 +30,19 @@ class HeteroGridDatasetDisk(Dataset):
     def __init__(
         self,
         root: str,
-        norm_method: str,
         data_normalizer: Normalizer,
         transform: Optional[Callable] = None,
         pre_transform: Optional[Callable] = None,
         pre_filter: Optional[Callable] = None,
     ):
-        self.norm_method = norm_method
         self.data_normalizer = data_normalizer
         self.length = None
 
         super().__init__(root, transform, pre_transform, pre_filter)
 
-        # Load normalization stats if available
-        data_stats_path = osp.join(
-            self.processed_dir,
-            f"data_stats_{self.norm_method}.pt",
-        )
-
         load_scenarios_path = osp.join(self.processed_dir, "load_scenarios.pt")
-
-        if osp.exists(data_stats_path) and osp.exists(load_scenarios_path):
-            self.data_stats = torch.load(data_stats_path, weights_only=True)
-            self.data_normalizer.fit_from_dict(self.data_stats)
+        if osp.exists(load_scenarios_path):
             self.load_scenarios = torch.load(load_scenarios_path, weights_only=True)
-
     @property
     def raw_file_names(self):
         return ["bus_data.parquet", "gen_data.parquet", "branch_data.parquet"]
@@ -74,7 +54,6 @@ class HeteroGridDatasetDisk(Dataset):
     @property
     def processed_file_names(self):
         return [
-            f"data_stats_{self.norm_method}.pt",
             "load_scenarios.pt",
             self.processed_done_file,
         ]
@@ -87,9 +66,11 @@ class HeteroGridDatasetDisk(Dataset):
         bus_data = pd.read_parquet(osp.join(self.raw_dir, "bus_data.parquet"))
         gen_data = pd.read_parquet(osp.join(self.raw_dir, "gen_data.parquet"))
         branch_data = pd.read_parquet(osp.join(self.raw_dir, "branch_data.parquet"))
+        
+        assert bus_data['scenario'].min() == 0 and bus_data['scenario'].max() == len(bus_data['scenario'].unique()) - 1
 
         load_scenarios = torch.tensor(
-            bus_data.groupby("scenario")["load_scenario_idx"].first().values,
+            bus_data.groupby("scenario", sort=True)["load_scenario_idx"].first().values,
         )
         torch.save(load_scenarios, osp.join(self.processed_dir, "load_scenarios.pt"))
 
@@ -100,13 +81,6 @@ class HeteroGridDatasetDisk(Dataset):
         )
         bus_data = bus_data.merge(agg_gen, on=["scenario", "bus"], how="left").fillna(0)
 
-        print("FIT NORMALIZER")
-        self.data_stats = self.data_normalizer.fit(bus_data=bus_data, gen_data=gen_data)
-        data_stats_path = osp.join(
-            self.processed_dir,
-            f"data_stats_{self.norm_method}.pt",
-        )
-        torch.save(self.data_stats, data_stats_path)
 
         done_path = osp.join(self.processed_dir, self.processed_done_file)
         if osp.exists(done_path):
@@ -130,6 +104,8 @@ class HeteroGridDatasetDisk(Dataset):
             "BS",
             "vn_kv",
         ]
+       
+        
         gen_features = [
             "p_mw",
             "min_p_mw",
@@ -139,6 +115,7 @@ class HeteroGridDatasetDisk(Dataset):
             "cp2_eur_per_mw2",
             "in_service",
         ]
+        
         common_branch_features = ["tap", "ang_min", "ang_max", "rate_a", "br_status"]
         forward_branch_features = [
             "pf",
@@ -167,6 +144,8 @@ class HeteroGridDatasetDisk(Dataset):
             bus_data["scenario"].unique(),
             desc="Processing scenarios",
         ):
+            if osp.exists(osp.join(self.processed_dir, f"data_index_{scenario}.pt")):
+                continue
             if (
                 scenario not in gen_groups.groups
                 or scenario not in branch_groups.groups
@@ -186,7 +165,8 @@ class HeteroGridDatasetDisk(Dataset):
 
             data["bus"].y = data["bus"].x[:, : (VA_H + 1)].clone()
             data["gen"].y = data["gen"].x[:, : (PG_H + 1)].clone()
-
+            
+    
             # Bus-Bus edges
             branch_df = branch_groups.get_group(scenario)
 

@@ -17,10 +17,11 @@ from gridfm_graphkit.tasks.utils import (
     plot_residuals_histograms,
     residual_stats_by_type,
 )
-from pytorch_lightning.utilities import rank_zero_only
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from torch_scatter import scatter_add
+from torch_geometric.nn import global_mean_pool
 from gridfm_graphkit.models.utils import (
     ComputeBranchFlow,
     ComputeNodeInjection,
@@ -46,7 +47,7 @@ class PowerFlowTask(ReconstructionTask):
         dataset_name = self.args.data.networks[dataloader_idx]
 
         self.data_normalizers[dataloader_idx].inverse_transform(batch)
-        self.data_normalizers[dataloader_idx].inverse_output(output)
+        self.data_normalizers[dataloader_idx].inverse_output(output, batch)
 
         branch_flow_layer = ComputeBranchFlow()
         node_injection_layer = ComputeNodeInjection()
@@ -154,6 +155,15 @@ class PowerFlowTask(ReconstructionTask):
         loss_dict["Active Power Loss"] = final_residual_real_bus.detach()
         loss_dict["Reactive Power Loss"] = final_residual_imag_bus.detach()
 
+        # Power Balance Error (PBE) metrics
+        delta_PQ_2 = residual_P**2 + residual_Q**2
+        delta_PQ_magn = torch.sqrt(delta_PQ_2)
+        pbe_mean_per_graph = global_mean_pool(delta_PQ_magn, bus_batch)  # [num_graphs]
+        pbe_mean = pbe_mean_per_graph.mean()
+        pbe_max = delta_PQ_magn.max()
+
+        loss_dict["PBE Mean"] = pbe_mean.detach()
+
         mse_PQ = F.mse_loss(
             output["bus"][mask_PQ],
             target[mask_PQ],
@@ -201,10 +211,36 @@ class PowerFlowTask(ReconstructionTask):
                 sync_dist=True,
                 logger=False,
             )
+        # Log PBE Max separately with max reduction across batches
+        self.log(
+            f"{dataset_name}/PBE Max",
+            pbe_max.detach(),
+            batch_size=batch.num_graphs,
+            add_dataloader_idx=False,
+            sync_dist=True,
+            logger=False,
+            reduce_fx="max",
+        )
         return
 
-    @rank_zero_only
     def on_test_end(self):
+        # In DDP, gather verbose test outputs from all ranks to rank 0
+        # so that plots and detailed analysis cover the full test set.
+        if self.args.verbose and dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+            gathered = [None] * world_size if dist.get_rank() == 0 else None
+            dist.gather_object(self.test_outputs, gathered, dst=0)
+            if dist.get_rank() == 0:
+                merged = {i: [] for i in range(len(self.args.data.networks))}
+                for rank_data in gathered:
+                    for dl_idx, batches in rank_data.items():
+                        merged[dl_idx].extend(batches)
+                self.test_outputs = merged
+
+        # Only rank 0 proceeds with logging, CSV writing, and plotting
+        if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+            return
+
         if isinstance(self.logger, MLFlowLogger):
             artifact_dir = os.path.join(
                 self.logger.save_dir,
@@ -248,6 +284,8 @@ class PowerFlowTask(ReconstructionTask):
             # Residuals and generator metrics
             avg_active_res = metrics.get("Active Power Loss", " ")
             avg_reactive_res = metrics.get("Reactive Power Loss", " ")
+            pbe_mean_val = metrics.get("PBE Mean", " ")
+            pbe_max_val = metrics.get("PBE Max", " ")
 
             # --- Main RMSE metrics file ---
             data_main = {
@@ -264,8 +302,10 @@ class PowerFlowTask(ReconstructionTask):
                 "Metric": [
                     "Avg. active res. (MW)",
                     "Avg. reactive res. (MVar)",
+                    "PBE Mean",
+                    "PBE Max",
                 ],
-                "Value": [avg_active_res, avg_reactive_res],
+                "Value": [avg_active_res, avg_reactive_res, pbe_mean_val, pbe_max_val],
             }
             df_residuals = pd.DataFrame(data_residuals)
 

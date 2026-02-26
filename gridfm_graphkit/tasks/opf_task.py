@@ -60,7 +60,7 @@ class OptimalPowerFlowTask(ReconstructionTask):
         dataset_name = self.args.data.networks[dataloader_idx]
 
         self.data_normalizers[dataloader_idx].inverse_transform(batch)
-        self.data_normalizers[dataloader_idx].inverse_output(output)
+        self.data_normalizers[dataloader_idx].inverse_output(output, batch)
 
         branch_flow_layer = ComputeBranchFlow()
         node_injection_layer = ComputeNodeInjection()

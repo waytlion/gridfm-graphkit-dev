@@ -69,14 +69,29 @@ gridfm_graphkit evaluate --config path/to/eval.yaml --model_path path/to/model.p
 
 ### Arguments
 
-| Argument       | Type  | Description                              | Default   |
-| -------------- | ----- | ---------------------------------------- | --------- |
-| `--config`     | `str` | **Required**. Path to evaluation config. | `None`    |
-| `--model_path` | `str` | Path to the trained model file.          | `None`    |
-| `--exp_name`   | `str` | MLflow experiment name.                  | timestamp |
-| `--run_name`   | `str` | MLflow run name.                         | `run`     |
-| `--log_dir`    | `str` | MLflow logging directory.                | `mlruns`  |
-| `--data_path`  | `str` | Dataset directory.                       | `data`    |
+| Argument              | Type  | Description                                                                                                   | Default   |
+| --------------------- | ----- | ------------------------------------------------------------------------------------------------------------- | --------- |
+| `--config`            | `str` | **Required**. Path to evaluation config.                                                                      | `None`    |
+| `--model_path`        | `str` | Path to the trained model file.                                                                               | `None`    |
+| `--normalizer_stats`  | `str` | Path to `normalizer_stats.pt` from a training run. Restores `fit_on_train` normalizers from saved statistics instead of re-fitting on the current data split. | `None`    |
+| `--exp_name`          | `str` | MLflow experiment name.                                                                                       | timestamp |
+| `--run_name`          | `str` | MLflow run name.                                                                                              | `run`     |
+| `--log_dir`           | `str` | MLflow logging directory.                                                                                     | `mlruns`  |
+| `--data_path`         | `str` | Dataset directory.                                                                                            | `data`    |
+
+### Example with saved normalizer stats
+
+When evaluating a model on a dataset, you can pass the normalizer statistics from the original training run to ensure the same normalization parameters are used:
+
+```bash
+gridfm_graphkit evaluate \
+  --config examples/config/HGNS_PF_datakit_case118.yaml \
+  --model_path mlruns/<experiment_id>/<run_id>/artifacts/model/best_model_state_dict.pt \
+  --normalizer_stats mlruns/<experiment_id>/<run_id>/artifacts/stats/normalizer_stats.pt \
+  --data_path data
+```
+
+> **Note:** The `--normalizer_stats` flag only affects normalizers with `fit_strategy = "fit_on_train"` (e.g. `HeteroDataMVANormalizer`). Per-sample normalizers (`HeteroDataPerSampleMVANormalizer`) always recompute their statistics from the current dataset regardless of this flag.
 
 ---
 
@@ -88,14 +103,15 @@ gridfm_graphkit predict --config path/to/config.yaml --model_path path/to/model.
 
 ### Arguments
 
-| Argument        | Type  | Description                                   | Default   |
-| --------------- | ----- | --------------------------------------------- | --------- |
-| `--config`      | `str` | **Required**. Path to prediction config file. | `None`    |
-| `--model_path`  | `str` | Path to the trained model file.               | `None`    |
-| `--exp_name`    | `str` | MLflow experiment name.                       | timestamp |
-| `--run_name`    | `str` | MLflow run name.                              | `run`     |
-| `--log_dir`     | `str` | MLflow logging directory.                     | `mlruns`  |
-| `--data_path`   | `str` | Dataset directory.                            | `data`    |
-| `--output_path` | `str` | Directory where predictions are saved.        | `data`    |
+| Argument              | Type  | Description                                                                                                   | Default   |
+| --------------------- | ----- | ------------------------------------------------------------------------------------------------------------- | --------- |
+| `--config`            | `str` | **Required**. Path to prediction config file.                                                                 | `None`    |
+| `--model_path`        | `str` | Path to the trained model file.                                                                               | `None`    |
+| `--normalizer_stats`  | `str` | Path to `normalizer_stats.pt` from a training run. Restores `fit_on_train` normalizers from saved statistics. | `None`    |
+| `--exp_name`          | `str` | MLflow experiment name.                                                                                       | timestamp |
+| `--run_name`          | `str` | MLflow run name.                                                                                              | `run`     |
+| `--log_dir`           | `str` | MLflow logging directory.                                                                                     | `mlruns`  |
+| `--data_path`         | `str` | Dataset directory.                                                                                            | `data`    |
+| `--output_path`       | `str` | Directory where predictions are saved.                                                                        | `data`    |
 
 ---

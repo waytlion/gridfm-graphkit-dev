@@ -55,12 +55,20 @@ class BaseTask(L.LightningModule, ABC):
             log_dir = os.path.join(self.logger.save_dir, "stats")
 
         os.makedirs(log_dir, exist_ok=True)
+
+        # Human-readable log
         log_stats_path = os.path.join(log_dir, "normalization_stats.txt")
         with open(log_stats_path, "w") as log_file:
             for i, normalizer in enumerate(self.data_normalizers):
                 log_file.write(
                     f"Data Normalizer {self.args.data.networks[i]} stats:\n{normalizer.get_stats()}\n\n",
                 )
+
+        # Machine-loadable stats (one file per network, keyed by network name)
+        stats_dict = {}
+        for i, normalizer in enumerate(self.data_normalizers):
+            stats_dict[self.args.data.networks[i]] = normalizer.get_stats()
+        torch.save(stats_dict, os.path.join(log_dir, "normalizer_stats.pt"))
 
     def configure_optimizers(self):
         self.optimizer = torch.optim.AdamW(

@@ -1,22 +1,15 @@
-import torch
-from torch_geometric.loader import DataLoader
-from torch.utils.data import ConcatDataset
-from torch.utils.data import Subset
+import os
+import random
+import warnings
+import numpy as np
 import torch.distributed as dist
-from gridfm_graphkit.io.param_handler import (
-    NestedNamespace,
-    load_normalizer,
-    get_task_transforms,
-)
+from torch.utils.data import Subset
+from gridfm_graphkit.io.param_handler import get_task_transforms
 from gridfm_graphkit.datasets.utils import (
     split_dataset,
     split_dataset_by_load_scenario_idx,
+    split_dataset_by_time,
 )
-import numpy as np
-import random
-import warnings
-import os
-import lightning as L
 from gridfm_graphkit.datasets.hetero_powergrid_datamodule import LitGridHeteroDataModule
 from gridfm_graphkit.datasets.powergrid_hetero_forecast_dataset import HeteroGridForecastDatasetDisk
 
@@ -24,100 +17,54 @@ class LitGridHeteroForecastDataModule(LitGridHeteroDataModule):
     """
     DataModule for one-step-ahead forecasting.
     
-    Inherits all data loading from LitGridHeteroDataModule.
+    Inherits all ormalization & setup from LitGridHeteroDataModule.
     Differences:
-     1.  Uses HeteroGridForecastDatasetDisk instead of HeteroGridForecastDatasetDisk.
-     2. Chronological Data Split
+     1.  Uses HeteroGridForecastDatasetDisk (t → t+1 pairs).
+     2.  Supports temporal_split for Chronological Data Split
     """
     
-    def setup(self, stage: str):
-        if self._is_setup_done:
-            print(f"Setup already done for stage={stage}, skipping...")
-            return
+    def _create_dataset(self, data_path_network, data_normalizer):
+        """Override to use forecast dataset class."""
+        return HeteroGridForecastDatasetDisk(
+            root=data_path_network,
+            data_normalizer=data_normalizer,
+            transform=get_task_transforms(args=self.args),
+        )
 
-        for i, network in enumerate(self.args.data.networks):
-            data_normalizer = load_normalizer(args=self.args)
-            self.data_normalizers.append(data_normalizer)
-
-            # Create torch dataset and split
-            data_path_network = os.path.join(self.data_dir, network)
-
-            # Run preprocessing only on rank 0
-            if dist.is_available() and dist.is_initialized() and dist.get_rank() == 0:
-                print(f"Pre-processing of {network} dataset on rank 0")
-                _ = HeteroGridForecastDatasetDisk(  # just to trigger processing
-                    root=data_path_network,
-                    norm_method=self.args.data.normalization,
-                    data_normalizer=data_normalizer,
-                    transform=get_task_transforms(args=self.args),
-                )
-
-            # All ranks wait here until processing is done
-            if torch.distributed.is_available() and torch.distributed.is_initialized():
-                torch.distributed.barrier()
-
-            dataset = HeteroGridForecastDatasetDisk(
-                root=data_path_network,
-                norm_method=self.args.data.normalization,
-                data_normalizer=data_normalizer,
-                transform=get_task_transforms(args=self.args),
+    def _split_dataset(self, dataset, load_scenarios, val_ratio, test_ratio):
+        """
+        Override splitting to support temporal_split flag.
+        
+        Args:
+            dataset: Subset to split
+            load_scenarios: Load scenario indices for each sample
+            val_ratio: Validation split ratio
+            test_ratio: Test split ratio
+            
+        Returns:
+            train_dataset, val_dataset, test_dataset
+        """
+        # Check for temporal forecasting split flag
+        if getattr(self.args.data, 'temporal_split', False):
+            return split_dataset_by_time(
+                dataset,
+                self.data_dir,
+                load_scenarios,
+                val_ratio,
+                test_ratio,
             )
-            self.datasets.append(dataset)
-
-            num_scenarios = self.args.data.scenarios[i]
-            if num_scenarios > len(dataset):
-                warnings.warn(
-                    f"Requested number of scenarios ({num_scenarios}) exceeds dataset size ({len(dataset)}). "
-                    "Using the full dataset instead.",
-                )
-                num_scenarios = len(dataset)
-
-            # Create a subset
-            all_indices = list(range(len(dataset)))
-            # Random seed set before every shuffle for reproducibility in case the power grid datasets are analyzed in a different order
-            random.seed(self.args.seed)
-            random.shuffle(all_indices)
-            subset_indices = all_indices[:num_scenarios]
-
-            # load_scenario for each scenario in the subset
-            load_scenarios = dataset.load_scenarios[subset_indices]
-
-            dataset = Subset(dataset, subset_indices)
-
-            np.random.seed(self.args.seed)
-
-            #! NEW: Check for temporal forecasting split flag
-            if getattr(self.args.data, 'temporal_split', False):
-                from gridfm_graphkit.datasets.utils import split_dataset_by_time
-                train_dataset, val_dataset, test_dataset = split_dataset_by_time(
-                    dataset,
-                    self.data_dir,
-                    load_scenarios,
-                    self.args.data.val_ratio,
-                    self.args.data.test_ratio,
-                )
-            elif self.split_by_load_scenario_idx:
-                train_dataset, val_dataset, test_dataset = (
-                    split_dataset_by_load_scenario_idx(
-                        dataset,
-                        self.data_dir,
-                        load_scenarios,
-                        self.args.data.val_ratio,
-                        self.args.data.test_ratio,
-                    )
-                )
-            else:
-                train_dataset, val_dataset, test_dataset = split_dataset(
-                    dataset,
-                    self.data_dir,
-                    self.args.data.val_ratio,
-                    self.args.data.test_ratio,
-                )
-
-            self.train_datasets.append(train_dataset)
-            self.val_datasets.append(val_dataset)
-            self.test_datasets.append(test_dataset)
-
-        self.train_dataset_multi = ConcatDataset(self.train_datasets)
-        self.val_dataset_multi = ConcatDataset(self.val_datasets)
-        self._is_setup_done = True
+        elif self.split_by_load_scenario_idx:
+            return split_dataset_by_load_scenario_idx(
+                dataset,
+                self.data_dir,
+                load_scenarios,
+                val_ratio,
+                test_ratio,
+            )
+        else:
+            return split_dataset(
+                dataset,
+                self.data_dir,
+                val_ratio,
+                test_ratio,
+            )
