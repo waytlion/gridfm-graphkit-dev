@@ -11,7 +11,7 @@ from gridfm_graphkit.datasets.utils import (
     split_dataset_by_time,
 )
 from gridfm_graphkit.datasets.hetero_powergrid_datamodule import LitGridHeteroDataModule
-from gridfm_graphkit.datasets.powergrid_hetero_forecast_dataset import HeteroGridForecastDatasetDisk
+from gridfm_graphkit.datasets.forecast_t1_powergrid_hetero_dataset import HeteroGridForecastDatasetDisk
 
 class LitGridHeteroForecastDataModule(LitGridHeteroDataModule):
     """

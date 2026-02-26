@@ -159,7 +159,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
         5. SAME: Store outputs for plotting
         """
         #1: Prediction and Denormalization (SAME as OPF)
-        output, loss_dict = self.shared_step(batch)
+        output, loss_dict = self.shared_step(batch, stage="test")
         dataset_name = self.args.data.networks[dataloader_idx]
 
         self.data_normalizers[dataloader_idx].inverse_transform(batch)
