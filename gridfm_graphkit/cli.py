@@ -51,15 +51,17 @@ def main_cli(args):
 
     config_args = NestedNamespace(**base_config)
 
-    torch.manual_seed(config_args.seed)
-    random.seed(config_args.seed)
-    np.random.seed(config_args.seed)
+    L.seed_everything(config_args.seed, workers=True)
 
-    #  Check if forecast task
+    normalizer_stats_path = getattr(args, "normalizer_stats", None)
     if config_args.task.task_name in ["ForecastOPF"]:
-        litGrid = LitGridHeteroForecastDataModule(config_args, args.data_path)
+        litGrid = LitGridHeteroForecastDataModule(
+            config_args, args.data_path, normalizer_stats_path=normalizer_stats_path
+        )
     else:
-        litGrid = LitGridHeteroDataModule(config_args, args.data_path)
+        litGrid = LitGridHeteroDataModule(
+            config_args, args.data_path, normalizer_stats_path=normalizer_stats_path
+        )
     
     model = get_task(config_args, litGrid.data_normalizers)
     if args.command != "train":

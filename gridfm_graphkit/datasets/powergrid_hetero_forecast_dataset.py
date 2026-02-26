@@ -16,24 +16,14 @@ class HeteroGridForecastDatasetDisk(HeteroGridDatasetDisk):
     Input:  x_dict at time t
     Target: y_dict at time t+1
     """
-    
-    @property
-    def processed_file_names(self):
-        """Override: Forecast dataset has N-1 samples (no t+1 for last scenario)"""
-        bus_file = osp.join(self.raw_dir, "bus_data.parquet")
-        if not osp.exists(bus_file):
-            return []
-        
-        bus_data = pd.read_parquet(bus_file)
-        num_scenarios = bus_data["scenario"].nunique()
-        
-        return [f"data_{i}.pt" for i in range(num_scenarios - 1)]
 
     def process(self):
         print("LOADING DATA")
         bus_data = pd.read_parquet(osp.join(self.raw_dir, "bus_data.parquet"))
         gen_data = pd.read_parquet(osp.join(self.raw_dir, "gen_data.parquet"))
         branch_data = pd.read_parquet(osp.join(self.raw_dir, "branch_data.parquet"))
+
+        assert bus_data.scenario.min() == 0 and bus_data.scenario.max() == len(bus_data.scenario.unique()) - 1
 
         load_scenarios = torch.tensor(
             bus_data.groupby("scenario")["load_scenario_idx"].first().values,
@@ -46,14 +36,6 @@ class HeteroGridForecastDatasetDisk(HeteroGridDatasetDisk):
             .reset_index()
         )
         bus_data = bus_data.merge(agg_gen, on=["scenario", "bus"], how="left").fillna(0)
-
-        print("FIT NORMALIZER")
-        self.data_stats = self.data_normalizer.fit(bus_data=bus_data, gen_data=gen_data)
-        data_stats_path = osp.join(
-            self.processed_dir,
-            f"data_stats_{self.norm_method}.pt",
-        )
-        torch.save(self.data_stats, data_stats_path)
 
         done_path = osp.join(self.processed_dir, self.processed_done_file)
         if osp.exists(done_path):

@@ -35,7 +35,7 @@ class StateEstimationTask(ReconstructionTask):
         dataset_name = self.args.data.networks[dataloader_idx]
 
         self.data_normalizers[dataloader_idx].inverse_transform(batch)
-        self.data_normalizers[dataloader_idx].inverse_output(output)
+        self.data_normalizers[dataloader_idx].inverse_output(output, batch)
 
         num_bus = batch.x_dict["bus"].size(0)
         _, gen_to_bus_index = batch.edge_index_dict[("gen", "connected_to", "bus")]

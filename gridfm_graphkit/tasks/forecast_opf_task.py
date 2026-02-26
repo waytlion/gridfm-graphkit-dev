@@ -242,7 +242,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
         dataset_name = self.args.data.networks[dataloader_idx]
 
         self.data_normalizers[dataloader_idx].inverse_transform(batch)
-        self.data_normalizers[dataloader_idx].inverse_output(output)
+        self.data_normalizers[dataloader_idx].inverse_output(output, batch)
 
         #2: NEW - Load Forecast Metrics
         pred_bus = output["bus"]  # [Pd, Qd, Qg, Vm, Va]

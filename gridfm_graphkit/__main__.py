@@ -2,6 +2,9 @@ import argparse
 from datetime import datetime
 from gridfm_graphkit.cli import main_cli
 
+import subprocess
+import os
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -34,6 +37,9 @@ def main():
         help="Evaluate model performance",
     )
     evaluate_parser.add_argument("--model_path", type=str, default=None)
+    evaluate_parser.add_argument("--normalizer_stats", type=str, default=None,
+                                 help="Path to normalizer_stats.pt from a training run. "
+                                      "Restores normalizers from saved stats instead of re-fitting.")
     evaluate_parser.add_argument("--config", type=str, required=True)
     evaluate_parser.add_argument("--exp_name", type=str, default=exp_name)
     evaluate_parser.add_argument("--run_name", type=str, default="run")
@@ -43,6 +49,9 @@ def main():
     # ---- PREDICT SUBCOMMAND ----
     predict_parser = subparsers.add_parser("predict", help="Evaluate model performance")
     predict_parser.add_argument("--model_path", type=str, required=None)
+    predict_parser.add_argument("--normalizer_stats", type=str, default=None,
+                                help="Path to normalizer_stats.pt from a training run. "
+                                     "Restores normalizers from saved stats instead of re-fitting.")
     predict_parser.add_argument("--config", type=str, required=True)
     predict_parser.add_argument("--exp_name", type=str, default=exp_name)
     predict_parser.add_argument("--run_name", type=str, default="run")
