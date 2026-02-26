@@ -45,32 +45,31 @@ Enables joint load forecasting + optimal dispatch in a single model:
 
 ### 3. Task (`ForecastOPFTask`)
 
-Inherits from `OptimalPowerFlowTask`, overrides:
+Inherits from `OptimalPowerFlowTask` → `ReconstructionTask`.
 
-- `shared_step()`  
-  - Computes MSE on predicted features  
-  - Adds physics loss  
-
-- `test_step()`  
-  - Adds MAE metrics for load forecasting quality  
-
+- Overrides `test_step()`:
+  - Adds MAE metrics for load forecasting quality
+  - Converts 5D forecast output to OPF format for physics metric reuse
 ---
 
 ### 4. Model (`GNS_heterogeneous`)
 
 Modified to support `task_name == "ForecastOPF"`:
 
-- Decoder outputs:
-  - 5 bus features (instead of 2 for OPF)  
-  - 1 generator feature  
-- Physics decoder registered for ForecastOPF task  
-
+- Decoder outputs 5 bus features `[Pd, Qd, Qg, Vm, Va]` + 1 gen feature `[Pg]`
+- **Reorders** Vm, Va to `[0, 1]` format before physics decoder (which expects `[Vm, Va]`)
+- Physics decoder output is used only for residual computation, NOT to override model predictions
+- Physics decoder registered for ForecastOPF task
 ---
 
-### 5. Loss Function
+### 5. Loss Functions
 
-Created Loss fct to compute MSE over all preds: `ForecastMSE`
-(Physics-heavy to ensure feasibility)
+Two losses combined via `MixedLoss`:
+
+- **`ForecastMSE`**: MSE over all bus [Pd, Qd, Qg, Vm, Va] + gen [Pg] predictions  
+- **`LayeredWeightedPhysicsLoss`**: Physics residuals from intermediate GNN layers  
+
+Combined with configurable weights (e.g., 0.5 / 0.5) in config YAML.
 
 ---
 

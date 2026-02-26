@@ -11,3 +11,5 @@ gridfm_graphkit.egg-info
 mlruns
 *.pt
 .DS_Store
+pr_commits.txt
+*.patch

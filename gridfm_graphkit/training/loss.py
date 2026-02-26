@@ -355,10 +355,7 @@ class ForecastMSE(BaseLoss):
         Returns:
             dict with "loss" (tensor with gradient) and detached components
         """
-        print(f"DEBUG ForecastMSE: pred type={type(pred)}, target type={type(target)}")
-        if pred is not None:
-            print(f"  pred keys: {pred.keys() if isinstance(pred, dict) else 'not a dict'}")
-    # ... rest of code
+
         # Bus MSE 
         loss_bus = F.mse_loss(
             pred["bus"], 

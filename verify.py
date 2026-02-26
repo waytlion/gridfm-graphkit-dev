@@ -1,5 +1,5 @@
 # diagnostic.py
-from gridfm_graphkit.datasets.powergrid_hetero_forecast_dataset import HeteroGridForecastDatasetDisk
+from gridfm_graphkit.datasets.forecast_t1_powergrid_hetero_dataset import HeteroGridForecastDatasetDisk
 from gridfm_graphkit.tasks.task_transforms import get_task_transforms
 from gridfm_graphkit.io.param_handler import load_config
 

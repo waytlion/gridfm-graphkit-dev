@@ -1,6 +1,6 @@
 from gridfm_graphkit.tasks.pf_task import PowerFlowTask
 from gridfm_graphkit.tasks.opf_task import OptimalPowerFlowTask
 from gridfm_graphkit.tasks.se_task import StateEstimationTask
-from gridfm_graphkit.tasks.forecast_opf_task import ForecastOPFTask 
+from gridfm_graphkit.tasks.forecast_t1_opf_task import ForecastOPFTask 
 
 __all__ = ["PowerFlowTask", "OptimalPowerFlowTask", "StateEstimationTask", "ForecastOPFTask"]

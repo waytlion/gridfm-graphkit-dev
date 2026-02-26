@@ -1,5 +1,5 @@
 from gridfm_graphkit.datasets.hetero_powergrid_datamodule import LitGridHeteroDataModule
-from gridfm_graphkit.datasets.hetero_powergrid_forecast_datamodule import LitGridHeteroForecastDataModule
+from gridfm_graphkit.datasets.forecast_t1_hetero_powergrid_datamodule import LitGridHeteroForecastDataModule
 from gridfm_graphkit.io.param_handler import NestedNamespace
 from gridfm_graphkit.training.callbacks import SaveBestModelStateDict
 import numpy as np

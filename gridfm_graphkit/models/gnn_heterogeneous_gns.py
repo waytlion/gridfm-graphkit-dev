@@ -28,6 +28,8 @@ from gridfm_graphkit.datasets.globals import (
     MAX_PG,
 )
 
+FORECAST_VM_OUT = 3  # Index of Vm in forecast output [Pd, Qd, Qg, Vm, Va]
+FORECAST_VA_OUT = 4  # Index of Va in forecast output
 
 @MODELS_REGISTRY.register("GNS_heterogeneous")
 class GNS_heterogeneous(nn.Module):
@@ -245,8 +247,8 @@ class GNS_heterogeneous(nn.Module):
                 # Apply task-specific bounds and prepare input for physics decoder
                 if self.task == "ForecastOPF":
                     # Apply sigmoid bounds to voltages (at indices 3, 4 in 5-feature output)
-                    bus_temp[:, 3] = bound_with_sigmoid(
-                        bus_temp[:, 3],
+                    bus_temp[:, FORECAST_VM_OUT] = bound_with_sigmoid(
+                        bus_temp[:, FORECAST_VM_OUT],
                         x_dict["bus"][:, MIN_VM_H],
                         x_dict["bus"][:, MAX_VM_H],
                     )
@@ -258,8 +260,8 @@ class GNS_heterogeneous(nn.Module):
                     
                     #!reorder bus features: physics decoder expects [Vm, Va] at indices [0, 1]
                     bus_temp_reordered = torch.stack([
-                        bus_temp[:, 3],  
-                        bus_temp[:, 4], 
+                        bus_temp[:, FORECAST_VM_OUT],  
+                        bus_temp[:, FORECAST_VA_OUT], 
                     ], dim=1)
                     
                 elif self.task == "OptimalPowerFlow":
