@@ -322,3 +322,22 @@ class LossPerDim(BaseLoss):
             f"MSE loss {self.dim}": mse_loss.detach(),
             f"MAE loss {self.dim}": mae_loss.detach(),
         }
+
+@LOSS_REGISTRY.register("ForecastBusMSE")
+class ForecastBusMSE(BaseLoss):
+    def __init__(self, loss_args, args):
+        super().__init__()
+
+    def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
+        loss_bus = F.mse_loss(pred["bus"], target["bus"], reduction="mean")
+        return {"loss": loss_bus, "Forecast bus MSE": loss_bus.detach()}
+
+
+@LOSS_REGISTRY.register("ForecastGenMSE")
+class ForecastGenMSE(BaseLoss):
+    def __init__(self, loss_args, args):
+        super().__init__()
+
+    def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
+        loss_gen = F.mse_loss(pred["gen"], target["gen"], reduction="mean")
+        return {"loss": loss_gen, "Forecast gen MSE": loss_gen.detach()}
