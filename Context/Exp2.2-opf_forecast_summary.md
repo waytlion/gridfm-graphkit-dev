@@ -69,7 +69,7 @@ Modified to support `task_name == "ForecastOPF"`:
 
 ### 5. Loss Function
 
-**Weights:** `[0.1, 0.1, 0.8]`  
+Created Loss fct to compute MSE over all preds: `ForecastMSE`
 (Physics-heavy to ensure feasibility)
 
 ---

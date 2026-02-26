@@ -77,85 +77,6 @@ class ForecastOPFTask(OptimalPowerFlowTask):
     def __init__(self, args, data_normalizers):
         super().__init__(args, data_normalizers)
 
-    def shared_step(self, batch, stage="train"):
-        """
-        Custom loss computation on all 5 predicted features (OF only on 2).
-
-        Returns:
-            output: Model predictions
-            loss_dict: Dictionary of loss components
-        """
-        #* DEBUG: Print shapes on first call
-        if not hasattr(self, '_debug_printed'):
-            print("="*50)
-            print("DEBUG: Batch shapes")
-            print(f"batch.x_dict['bus'].shape: {batch.x_dict['bus'].shape}")
-            print(f"batch.y_dict['bus'].shape: {batch.y_dict['bus'].shape}")
-            print(f"batch.x_dict['gen'].shape: {batch.x_dict['gen'].shape}")
-            print(f"batch.y_dict['gen'].shape: {batch.y_dict['gen'].shape}")
-            print(f"batch.mask_dict['bus'].shape: {batch.mask_dict['bus'].shape}")
-            print(f"batch.mask_dict['bus'].sum(): {batch.mask_dict['bus'].sum()}")
-            print("="*50)
-            self._debug_printed = True
-
-        # Forward pass
-        output = self.forward(
-            batch.x_dict,
-            batch.edge_index_dict,
-            batch.edge_attr_dict,
-            batch.mask_dict,
-        )
-        
-         # DEBUG: Print output shapes
-        if not hasattr(self, '_output_printed'):
-            print("="*50)
-            print("DEBUG: Output shapes")
-            print(f"output['bus'].shape: {output['bus'].shape}")
-            print(f"output['gen'].shape: {output['gen'].shape}")
-            print("="*50)
-            self._output_printed = True
-
-        # CHANGED: MSE on predicted features
-        loss_bus = F.mse_loss(output["bus"], batch.y_dict["bus"])  # [N,5] vs [N,5]
-        loss_gen = F.mse_loss(output["gen"], batch.y_dict["gen"])  # [M,1] vs [M,1]
-        
-        # Get physics loss from MixedLoss
-        # self.loss_fn is MixedLoss containing [LayeredWeightedPhysics, MaskedGenMSE, MaskedBusMSE]
-        all_losses = self.loss_fn(
-            output,
-            batch.y_dict,
-            batch.edge_index_dict,
-            batch.edge_attr_dict,
-            batch.mask_dict,
-            model=self.model,
-        )
-        loss_physics = all_losses.get("Layered Weighted Physics Loss")
-        
-        # Use bus/gen MSE over all predicted features and but keep physics from config
-        w_physics = self.args.training.loss_weights[0]  
-        w_gen = self.args.training.loss_weights[1]      
-        w_bus = self.args.training.loss_weights[2]      
-        total_loss = w_bus * loss_bus + w_gen * loss_gen + w_physics * loss_physics
-        
-        # Build loss dictionary
-        loss_dict = {
-            "loss": total_loss,
-            "loss_bus": loss_bus.detach(),
-            "loss_gen": loss_gen.detach(),
-            "loss_physics": loss_physics.detach() 
-        }
-
-        # Log losses
-        for key, value in loss_dict.items():
-            self.log(
-                f"{stage}/{key}",
-                value,
-                batch_size=batch.num_graphs,
-                sync_dist=True,
-            )
-        
-        return output, loss_dict
-
     def _convert_to_opf_format(self, output, batch):
         """
         Convert ForecastOPF output to OPF format for metrics reuse.
@@ -238,7 +159,7 @@ class ForecastOPFTask(OptimalPowerFlowTask):
         5. SAME: Store outputs for plotting
         """
         #1: Prediction and Denormalization (SAME as OPF)
-        output, loss_dict = self.shared_step(batch, stage="test")
+        output, loss_dict = self.shared_step(batch)
         dataset_name = self.args.data.networks[dataloader_idx]
 
         self.data_normalizers[dataloader_idx].inverse_transform(batch)

@@ -322,3 +322,62 @@ class LossPerDim(BaseLoss):
             f"MSE loss {self.dim}": mse_loss.detach(),
             f"MAE loss {self.dim}": mae_loss.detach(),
         }
+
+@LOSS_REGISTRY.register("ForecastMSE")
+class ForecastMSE(BaseLoss):
+    """
+    MSE loss for forecasting tasks on all predicted features.
+    Computes separate MSE for bus [Pd, Qd, Qg, Vm, Va] and gen [Pg] predictions.
+    """
+    
+    def __init__(self, loss_args, args):
+        super().__init__()
+        self.reduction = "mean"
+        self.args = args
+    
+    def forward(
+        self,
+        pred,
+        target,
+        edge_index=None,
+        edge_attr=None,
+        mask=None,
+        model=None,
+    ):
+        """
+        - Compute MSE on all bus and generator features.
+        - Equally weighted Bus and Gen term
+        
+        Args:
+            pred_dict: {"bus": [N, 5], "gen": [M, 1]} - All predicted features
+            target_dict: {"bus": [N, 5], "gen": [M, 1]} - Ground truth targets
+            
+        Returns:
+            dict with "loss" (tensor with gradient) and detached components
+        """
+        print(f"DEBUG ForecastMSE: pred type={type(pred)}, target type={type(target)}")
+        if pred is not None:
+            print(f"  pred keys: {pred.keys() if isinstance(pred, dict) else 'not a dict'}")
+    # ... rest of code
+        # Bus MSE 
+        loss_bus = F.mse_loss(
+            pred["bus"], 
+            target["bus"], 
+            reduction=self.reduction
+        )
+        
+        # Gen MSE
+        loss_gen = F.mse_loss(
+            pred["gen"], 
+            target["gen"], 
+            reduction=self.reduction
+        )
+        
+        # Combine with equal weighting
+        total_loss = loss_bus + loss_gen
+        
+        return {
+            "loss": total_loss, 
+            "Forecast bus MSE": loss_bus.detach(),
+            "Forecast gen MSE": loss_gen.detach(),
+        }
