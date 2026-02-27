@@ -6,7 +6,50 @@ import subprocess
 import os
 
 
+def fix_infiniband():
+    ibv = subprocess.run("ibv_devinfo", stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    lines = ibv.stdout.decode("utf-8").split("\n")
+    exclude = ""
+    for line in lines:
+        if "hca_id:" in line:
+            name = line.split(":")[1].strip()
+        if "\tport:" in line:
+            port = line.split(":")[1].strip()
+        if "link_layer:" in line and "Ethernet" in line:
+            exclude = exclude + f"{name}:{port},"
+
+    if exclude:
+        exclude = "^" + exclude[:-1]
+        os.environ["NCCL_IB_HCA"] = exclude
+
+
+def set_env():
+    # print("Using " + str(torch.cuda.device_count()) + " GPUs---------------------------------------------------------------------")
+    LSB_MCPU_HOSTS = os.environ[
+        "LSB_MCPU_HOSTS"
+    ].split(
+        " ",
+    )  # Parses Node list set by LSF, in format hostname proceeded by number of cores requested
+    HOST_LIST = LSB_MCPU_HOSTS[::2]  # Strips the cores per node items in the list
+    LSB_JOBID = os.environ[
+        "LSB_JOBID"
+    ]  # Parses Node list set by LSF, in format hostname proceeded by number of cores requested
+    os.environ["MASTER_ADDR"] = HOST_LIST[
+        0
+    ]  # Sets the MasterNode to thefirst node on the list of hosts
+    os.environ["MASTER_PORT"] = "5" + LSB_JOBID[-5:-1]
+    os.environ["NODE_RANK"] = str(
+        HOST_LIST.index(os.environ["HOSTNAME"]),
+    )  # Uses the list index for node rank, master node rank must be 0
+    os.environ["NCCL_SOCKET_IFNAME"] = (
+        "ib,bond"  # avoids using docker of loopback interface
+    )
+    os.environ["NCCL_IB_CUDA_SUPPORT"] = "1"  # Force use of infiniband
+
+
 def main():
+    set_env()
+    fix_infiniband()
     parser = argparse.ArgumentParser(
         prog="gridfm_graphkit",
         description="gridfm-graphkit CLI",
@@ -45,7 +88,10 @@ def main():
     evaluate_parser.add_argument("--run_name", type=str, default="run")
     evaluate_parser.add_argument("--log_dir", type=str, default="mlruns")
     evaluate_parser.add_argument("--data_path", type=str, default="data")
-
+    evaluate_parser.add_argument("--compute_dc_ac_metrics", action="store_true",
+                                 help="Compute ground-truth AC/DC power balance metrics on the test split.")
+    evaluate_parser.add_argument("--save_output", action="store_true",
+                                 help="Save per-bus predictions CSV via the predict step.")
     # ---- PREDICT SUBCOMMAND ----
     predict_parser = subparsers.add_parser("predict", help="Evaluate model performance")
     predict_parser.add_argument("--model_path", type=str, required=None)
