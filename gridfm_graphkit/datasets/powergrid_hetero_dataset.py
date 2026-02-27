@@ -27,6 +27,52 @@ class HeteroGridDatasetDisk(Dataset):
         pre_filter (callable, optional): Filter to determine which graphs to keep.
     """
 
+    BUS_FEATURES = [
+        "Pd",
+        "Qd",
+        "Qg",
+        "Vm",
+        "Va",
+        "PQ",
+        "PV",
+        "REF",
+        "min_vm_pu",
+        "max_vm_pu",
+        "min_q_mvar",
+        "max_q_mvar",
+        "GS",
+        "BS",
+        "vn_kv",
+    ]
+
+    GEN_FEATURES = [
+        "p_mw",
+        "min_p_mw",
+        "max_p_mw",
+        "cp0_eur",
+        "cp1_eur_per_mw",
+        "cp2_eur_per_mw2",
+        "in_service",
+    ]
+
+    COMMON_BRANCH_FEATURES = ["tap", "ang_min", "ang_max", "rate_a", "br_status"]
+    FORWARD_BRANCH_FEATURES = [
+        "pf",
+        "qf",
+        "Yff_r",
+        "Yff_i",
+        "Yft_r",
+        "Yft_i",
+    ] + COMMON_BRANCH_FEATURES
+    REVERSE_BRANCH_FEATURES = [
+        "pt",
+        "qt",
+        "Ytt_r",
+        "Ytt_i",
+        "Ytf_r",
+        "Ytf_i",
+    ] + COMMON_BRANCH_FEATURES
+
     def __init__(
         self,
         root: str,
@@ -87,52 +133,10 @@ class HeteroGridDatasetDisk(Dataset):
             print("Processed files already exist. Skipping processing.")
             return
 
-        bus_features = [
-            "Pd",
-            "Qd",
-            "Qg",
-            "Vm",
-            "Va",
-            "PQ",
-            "PV",
-            "REF",
-            "min_vm_pu",
-            "max_vm_pu",
-            "min_q_mvar",
-            "max_q_mvar",
-            "GS",
-            "BS",
-            "vn_kv",
-        ]
-       
-        
-        gen_features = [
-            "p_mw",
-            "min_p_mw",
-            "max_p_mw",
-            "cp0_eur",
-            "cp1_eur_per_mw",
-            "cp2_eur_per_mw2",
-            "in_service",
-        ]
-        
-        common_branch_features = ["tap", "ang_min", "ang_max", "rate_a", "br_status"]
-        forward_branch_features = [
-            "pf",
-            "qf",
-            "Yff_r",
-            "Yff_i",
-            "Yft_r",
-            "Yft_i",
-        ] + common_branch_features
-        reverse_branch_features = [
-            "pt",
-            "qt",
-            "Ytt_r",
-            "Ytt_i",
-            "Ytf_r",
-            "Ytf_i",
-        ] + common_branch_features
+        bus_features = self.BUS_FEATURES
+        gen_features = self.GEN_FEATURES
+        forward_branch_features = self.FORWARD_BRANCH_FEATURES
+        reverse_branch_features = self.REVERSE_BRANCH_FEATURES
 
         # Group by scenario
         bus_groups = bus_data.groupby("scenario")

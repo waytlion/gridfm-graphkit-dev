@@ -55,31 +55,49 @@ class OptimalPowerFlowTask(ReconstructionTask):
     def __init__(self, args, data_normalizers):
         super().__init__(args, data_normalizers)
 
-    def test_step(self, batch, batch_idx, dataloader_idx=0):
-        output, loss_dict = self.shared_step(batch)
-        dataset_name = self.args.data.networks[dataloader_idx]
+    def _compute_opf_metrics(self, output, target, batch, dataset_name, dataloader_idx):
+        """
+        Compute all OPF-specific physics, cost, and constraint violation metrics.
 
-        self.data_normalizers[dataloader_idx].inverse_transform(batch)
-        self.data_normalizers[dataloader_idx].inverse_output(output, batch)
+        This method was extracted from test_step() so that child classes (e.g.
+        ForecastOPFTask) can reuse the same ~200 lines of metrics computation
+        without copy-pasting. Each task only needs to prepare its output/target
+        in the standard OPF format, then delegate here.
 
-        branch_flow_layer = ComputeBranchFlow()
-        node_injection_layer = ComputeNodeInjection()
-        node_residuals_layer = ComputeNodeResiduals()
+        Input contract — both ``output`` and ``target`` must be in OPF format:
+            output["bus"]:  [N_bus, 4]  columns = [Vm, Va, Pg_agg, Qg]
+            output["gen"]:  [N_gen, 1]  columns = [Pg]
+            target["bus"]:  [N_bus, 4]  same column order as output
+            target["gen"]:  [N_gen, 1]
 
+        Args:
+            output (dict): Model predictions in OPF format.
+            target (dict): Ground-truth targets in OPF format.
+            batch: PyG HeteroData batch (used for edge data, masks, gen costs).
+            dataset_name (str): Name of the current test dataset (for verbose output storage).
+            dataloader_idx (int): Index of the current dataloader (for verbose output storage).
+
+        Returns:
+            dict: All computed metric name → value pairs, ready for logging.
+        """
+        metrics = {}
+
+        # ── Graph topology ──────────────────────────────────────────────
         num_bus = batch.x_dict["bus"].size(0)
         bus_edge_index = batch.edge_index_dict[("bus", "connects", "bus")]
         bus_edge_attr = batch.edge_attr_dict[("bus", "connects", "bus")]
         _, gen_to_bus_index = batch.edge_index_dict[("gen", "connected_to", "bus")]
 
+        # ── Generator cost & optimality gap ─────────────────────────────
         mse_PG = F.mse_loss(
             output["gen"],
-            batch.y_dict["gen"],
+            target["gen"],
             reduction="none",
         ).mean(dim=0)
         c0 = batch.x_dict["gen"][:, C0_H]
         c1 = batch.x_dict["gen"][:, C1_H]
         c2 = batch.x_dict["gen"][:, C2_H]
-        target_pg = batch.y_dict["gen"].squeeze()
+        target_pg = target["gen"].squeeze()
         pred_pg = output["gen"].squeeze()
         gen_cost_gt = c0 + c1 * target_pg + c2 * target_pg**2
         gen_cost_pred = c0 + c1 * pred_pg + c2 * pred_pg**2
@@ -91,28 +109,15 @@ class OptimalPowerFlowTask(ReconstructionTask):
 
         optimality_gap = torch.mean(torch.abs((cost_pred - cost_gt) / cost_gt * 100))
 
-        agg_gen_on_bus = scatter_add(
-            batch.y_dict["gen"],
-            gen_to_bus_index,
-            dim=0,
-            dim_size=num_bus,
-        )
-        # output_agg = torch.cat([batch.y_dict["bus"], agg_gen_on_bus], dim=1)
-        target = torch.stack(
-            [
-                batch.y_dict["bus"][:, VM_H],
-                batch.y_dict["bus"][:, VA_H],
-                agg_gen_on_bus.squeeze(),
-                batch.y_dict["bus"][:, QG_H],
-            ],
-            dim=1,
-        )
+        # ── Branch flow & thermal limit violations ──────────────────────
+        branch_flow_layer = ComputeBranchFlow()
+        node_injection_layer = ComputeNodeInjection()
+        node_residuals_layer = ComputeNodeResiduals()
 
         # UN-COMMENT THIS TO CHECK PBE ON GROUND TRUTH
-        # output["bus"] = target
+        # output["bus"] = target["bus"]
 
         Pft, Qft = branch_flow_layer(output["bus"], bus_edge_index, bus_edge_attr)
-        # Compute branch termal limits violations
         Sft = torch.sqrt(Pft**2 + Qft**2)  # apparent power flow per branch
         branch_thermal_limits = bus_edge_attr[:, RATE_A]
         branch_thermal_excess = F.relu(Sft - branch_thermal_limits)
@@ -125,7 +130,7 @@ class OptimalPowerFlowTask(ReconstructionTask):
         mean_thermal_violation_forward = torch.mean(forward_excess)
         mean_thermal_violation_reverse = torch.mean(reverse_excess)
 
-        # Compute branch angle difference violation
+        # ── Branch angle difference violations ──────────────────────────
         angle_min = bus_edge_attr[:, ANG_MIN]
         angle_max = bus_edge_attr[:, ANG_MAX]
 
@@ -140,6 +145,7 @@ class OptimalPowerFlowTask(ReconstructionTask):
             torch.mean(angle_excess_low + angle_excess_high) * 180.0 / torch.pi
         )
 
+        # ── Node injection residuals (power balance) ────────────────────
         P_in, Q_in = node_injection_layer(Pft, Qft, bus_edge_index, num_bus)
         residual_P, residual_Q = node_residuals_layer(
             P_in,
@@ -148,7 +154,7 @@ class OptimalPowerFlowTask(ReconstructionTask):
             batch.x_dict["bus"],
         )
 
-        # --- Qg limit violation mask ---
+        # ── Qg limit violations ────────────────────────────────────────
         Qg_pred = output["bus"][:, QG_OUT]
         Qg_max = batch.x_dict["bus"][:, MAX_QG_H]
         Qg_min = batch.x_dict["bus"][:, MIN_QG_H]
@@ -168,6 +174,7 @@ class OptimalPowerFlowTask(ReconstructionTask):
         mean_Qg_violation_PV = Qg_violation_amount[mask_PV].mean()
         mean_Qg_violation_REF = Qg_violation_amount[mask_REF].mean()
 
+        # ── Verbose: per-bus-type residual stats & output storage ───────
         if self.args.verbose:
             mean_res_P_PQ, max_res_P_PQ = residual_stats_by_type(
                 residual_P,
@@ -205,7 +212,7 @@ class OptimalPowerFlowTask(ReconstructionTask):
                 {
                     "dataset": dataset_name,
                     "pred": output["bus"].detach().cpu(),
-                    "target": target.detach().cpu(),
+                    "target": target["bus"].detach().cpu(),
                     "mask_PQ": mask_PQ.cpu(),
                     "mask_PV": mask_PV.cpu(),
                     "mask_REF": mask_REF.cpu(),
@@ -227,64 +234,102 @@ class OptimalPowerFlowTask(ReconstructionTask):
                 },
             )
 
+        # ── Aggregate metrics ───────────────────────────────────────────
         final_residual_real_bus = torch.mean(torch.abs(residual_P))
         final_residual_imag_bus = torch.mean(torch.abs(residual_Q))
 
-        loss_dict["Active Power Loss"] = final_residual_real_bus.detach()
-        loss_dict["Reactive Power Loss"] = final_residual_imag_bus.detach()
+        metrics["Active Power Loss"] = final_residual_real_bus.detach()
+        metrics["Reactive Power Loss"] = final_residual_imag_bus.detach()
 
+        # Per-bus-type MSE (OPF-format columns: VM, VA, PG, QG)
         mse_PQ = F.mse_loss(
             output["bus"][mask_PQ],
-            target[mask_PQ],
+            target["bus"][mask_PQ],
             reduction="none",
-        )
+        ).mean(dim=0)
         mse_PV = F.mse_loss(
             output["bus"][mask_PV],
-            target[mask_PV],
+            target["bus"][mask_PV],
             reduction="none",
-        )
+        ).mean(dim=0)
         mse_REF = F.mse_loss(
             output["bus"][mask_REF],
-            target[mask_REF],
+            target["bus"][mask_REF],
             reduction="none",
-        )
+        ).mean(dim=0)
 
-        mse_PQ = mse_PQ.mean(dim=0)
-        mse_PV = mse_PV.mean(dim=0)
-        mse_REF = mse_REF.mean(dim=0)
+        metrics["Opt gap"] = optimality_gap
+        metrics["MSE PG"] = mse_PG[PG_H]
 
-        loss_dict["Opt gap"] = optimality_gap
-        loss_dict["MSE PG"] = mse_PG[PG_H]
-
-        loss_dict["Branch termal violation from"] = mean_thermal_violation_forward
-        loss_dict["Branch termal violation to"] = mean_thermal_violation_reverse
-        loss_dict["Branch voltage angle difference violations"] = (
+        metrics["Branch termal violation from"] = mean_thermal_violation_forward
+        metrics["Branch termal violation to"] = mean_thermal_violation_reverse
+        metrics["Branch voltage angle difference violations"] = (
             branch_angle_violation_mean
         )
-        loss_dict["Mean Qg violation PV buses"] = mean_Qg_violation_PV
-        loss_dict["Mean Qg violation REF buses"] = mean_Qg_violation_REF
+        metrics["Mean Qg violation PV buses"] = mean_Qg_violation_PV
+        metrics["Mean Qg violation REF buses"] = mean_Qg_violation_REF
 
-        loss_dict["MSE PQ nodes - PG"] = mse_PQ[PG_OUT]
-        loss_dict["MSE PV nodes - PG"] = mse_PV[PG_OUT]
-        loss_dict["MSE REF nodes - PG"] = mse_REF[PG_OUT]
+        metrics["MSE PQ nodes - PG"] = mse_PQ[PG_OUT]
+        metrics["MSE PV nodes - PG"] = mse_PV[PG_OUT]
+        metrics["MSE REF nodes - PG"] = mse_REF[PG_OUT]
 
-        loss_dict["MSE PQ nodes - QG"] = mse_PQ[QG_OUT]
-        loss_dict["MSE PV nodes - QG"] = mse_PV[QG_OUT]
-        loss_dict["MSE REF nodes - QG"] = mse_REF[QG_OUT]
+        metrics["MSE PQ nodes - QG"] = mse_PQ[QG_OUT]
+        metrics["MSE PV nodes - QG"] = mse_PV[QG_OUT]
+        metrics["MSE REF nodes - QG"] = mse_REF[QG_OUT]
 
-        loss_dict["MSE PQ nodes - VM"] = mse_PQ[VM_OUT]
-        loss_dict["MSE PV nodes - VM"] = mse_PV[VM_OUT]
-        loss_dict["MSE REF nodes - VM"] = mse_REF[VM_OUT]
+        metrics["MSE PQ nodes - VM"] = mse_PQ[VM_OUT]
+        metrics["MSE PV nodes - VM"] = mse_PV[VM_OUT]
+        metrics["MSE REF nodes - VM"] = mse_REF[VM_OUT]
 
-        loss_dict["MSE PQ nodes - VA"] = mse_PQ[VA_OUT]
-        loss_dict["MSE PV nodes - VA"] = mse_PV[VA_OUT]
-        loss_dict["MSE REF nodes - VA"] = mse_REF[VA_OUT]
+        metrics["MSE PQ nodes - VA"] = mse_PQ[VA_OUT]
+        metrics["MSE PV nodes - VA"] = mse_PV[VA_OUT]
+        metrics["MSE REF nodes - VA"] = mse_REF[VA_OUT]
 
-        loss_dict["Test loss"] = loss_dict.pop("loss").detach()
-        for metric, value in loss_dict.items():
-            metric_name = f"{dataset_name}/{metric}"
+        return metrics
+
+    def test_step(self, batch, batch_idx, dataloader_idx=0):
+        output, loss_dict = self.shared_step(batch)
+        dataset_name = self.args.data.networks[dataloader_idx]
+
+        self.data_normalizers[dataloader_idx].inverse_transform(batch)
+        self.data_normalizers[dataloader_idx].inverse_output(output, batch)
+
+        # Build OPF-format target: [Vm, Va, Pg_agg, Qg]
+        # Pg is per-generator, so we aggregate to bus level first.
+        _, gen_to_bus_index = batch.edge_index_dict[("gen", "connected_to", "bus")]
+        num_bus = batch.x_dict["bus"].size(0)
+        agg_gen_on_bus = scatter_add(
+            batch.y_dict["gen"],
+            gen_to_bus_index,
+            dim=0,
+            dim_size=num_bus,
+        )
+        target = {
+            "bus": torch.stack(
+                [
+                    batch.y_dict["bus"][:, VM_H],
+                    batch.y_dict["bus"][:, VA_H],
+                    agg_gen_on_bus.squeeze(),
+                    batch.y_dict["bus"][:, QG_H],
+                ],
+                dim=1,
+            ),
+            "gen": batch.y_dict["gen"],
+        }
+
+        # Delegate all physics / cost / constraint metrics to the shared method.
+        # This is extracted so ForecastOPFTask can reuse it after converting
+        #its own output format to the standard OPF format.
+        opf_metrics = self._compute_opf_metrics(
+            output, target, batch, dataset_name, dataloader_idx,
+        )
+
+        # Merge into loss_dict and log
+        test_metrics = {**opf_metrics}
+        test_metrics["Test loss"] = loss_dict.pop("loss").detach()
+        for metric, value in test_metrics.items():
             self.log(
-                metric_name,
+                f"{dataset_name}/{metric}",
                 value,
                 batch_size=batch.num_graphs,
                 add_dataloader_idx=False,
