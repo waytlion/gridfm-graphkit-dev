@@ -10,3 +10,6 @@ gridfm_graphkit.egg-info
 mlruns
 *.pt
 .DS_Store
+train.sh
+logs/
+build/
