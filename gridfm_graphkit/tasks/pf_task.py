@@ -1,5 +1,7 @@
 from gridfm_graphkit.datasets.globals import (
     # Bus feature indices
+    PD_H,
+    QD_H,
     QG_H,
     VM_H,
     VA_H,
@@ -349,4 +351,65 @@ class PowerFlowTask(ReconstructionTask):
         self.test_outputs.clear()
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        raise NotImplementedError
+        output, _ = self.shared_step(batch)
+
+        self.data_normalizers[dataloader_idx].inverse_transform(batch)
+        self.data_normalizers[dataloader_idx].inverse_output(output, batch)
+
+        branch_flow_layer = ComputeBranchFlow()
+        node_injection_layer = ComputeNodeInjection()
+        node_residuals_layer = ComputeNodeResiduals()
+
+        num_bus = batch.x_dict["bus"].size(0)
+        bus_edge_index = batch.edge_index_dict[("bus", "connects", "bus")]
+        bus_edge_attr = batch.edge_attr_dict[("bus", "connects", "bus")]
+
+        Pft, Qft = branch_flow_layer(output["bus"], bus_edge_index, bus_edge_attr)
+        P_in, Q_in = node_injection_layer(Pft, Qft, bus_edge_index, num_bus)
+        residual_P, residual_Q = node_residuals_layer(
+            P_in, Q_in, output["bus"], batch.x_dict["bus"],
+        )
+        residual_P = torch.abs(residual_P)
+        residual_Q = torch.abs(residual_Q)
+        residual_mva = torch.sqrt(residual_P**2 + residual_Q**2)
+
+        bus_batch = batch.batch_dict["bus"]
+        scenario_ids = batch["scenario_id"][bus_batch]
+        local_bus_idx = torch.cat(
+            [torch.arange(c, device=bus_batch.device) for c in torch.bincount(bus_batch)]
+        )
+
+        bus_x = batch.x_dict["bus"]
+        bus_y = batch.y_dict["bus"]
+        mask_PQ = batch.mask_dict["PQ"]
+        mask_PV = batch.mask_dict["PV"]
+        mask_REF = batch.mask_dict["REF"]
+
+        _, gen_to_bus_index = batch.edge_index_dict[("gen", "connected_to", "bus")]
+        agg_gen_on_bus = scatter_add(
+            batch.y_dict["gen"],
+            gen_to_bus_index,
+            dim=0,
+            dim_size=num_bus,
+        )
+
+        return {
+            "scenario": scenario_ids.cpu().numpy(),
+            "bus": local_bus_idx.cpu().numpy(),
+            "pd_mw": bus_x[:, PD_H].cpu().numpy(),
+            "qd_mvar": bus_x[:, QD_H].cpu().numpy(),
+            "vm_pu_target": bus_y[:, VM_H].cpu().numpy(),
+            "va_target": bus_y[:, VA_H].cpu().numpy(),
+            "pg_mw_target": agg_gen_on_bus.squeeze().cpu().numpy(),
+            "qg_mvar_target": bus_y[:, QG_H].cpu().numpy(),
+            "is_pq": mask_PQ.cpu().numpy().astype(int),
+            "is_pv": mask_PV.cpu().numpy().astype(int),
+            "is_ref": mask_REF.cpu().numpy().astype(int),
+            "vm_pu": output["bus"][:, VM_OUT].detach().cpu().numpy(),
+            "va": output["bus"][:, VA_OUT].detach().cpu().numpy(),
+            "pg_mw": output["bus"][:, PG_OUT].detach().cpu().numpy(),
+            "qg_mvar": output["bus"][:, QG_OUT].detach().cpu().numpy(),
+            "active res. (MW)": residual_P.detach().cpu().numpy(),
+            "reactive res. (MVar)": residual_Q.detach().cpu().numpy(),
+            "PBE": residual_mva.detach().cpu().numpy(),
+        }
