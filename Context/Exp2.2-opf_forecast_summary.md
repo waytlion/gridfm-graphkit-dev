@@ -36,12 +36,12 @@ Enables joint load forecasting + optimal dispatch in a single model:
 ### 3. Task (`ForecastOPFTask`)
 
 Inherits from `OptimalPowerFlowTask`, overrides:
-  training_step()
-  — logs individual loss components (Forecast bus MSE, Forecast gen MSE, physics)
-  test_step()
-  — adds MAE metrics for all 6 predicted features + converts to OPF format for physics evaluation
-  on_test_end()
-  — generates forecast MAE CSV, then delegates to parent for RMSE/plots
+  - training_step()
+    - logs individual loss components (Forecast bus MSE, Forecast gen MSE, physics)
+  - test_step()
+    - adds MAE metrics for all 6 predicted features + converts to OPF format for physics evaluation
+  - on_test_end()
+    - generates forecast MAE CSV, then delegates to parent for RMSE/plots
 
 ### 4. Model (`GNS_heterogeneous`)
 
@@ -57,8 +57,61 @@ Modified to support `task_name == "ForecastOPF"`:
 
 ---
 
-
-
 ## Usage
-python -m gridfm_graphkit train  --config .\examples\config\forecasting_test.yaml --data_path data/
-python -m gridfm_graphkit evaluate  --config .\examples\config\forecasting_test.yaml --data_path data/
+```bash
+gridfm_graphkit train    --config examples/config/forecasting_test.yaml --data_path data/
+gridfm_graphkit evaluate --config examples/config/forecasting_test.yaml --data_path data/ --model_path <path_to_model>
+```
+
+---
+
+## Files Changed (for review)
+
+### New Files (core implementation)
+
+| File | Description |
+|------|-------------|
+| `gridfm_graphkit/tasks/forecast_opf_task.py` | ForecastOPF task — test metrics, MAE logging, format conversion |
+| `gridfm_graphkit/datasets/powergrid_hetero_forecast_dataset.py` | Forecast dataset — loads (t, t+1) pairs |
+| `gridfm_graphkit/datasets/hetero_powergrid_forecast_datamodule.py` | DataModule for forecast — temporal split, pairs handling |
+| `examples/config/forecasting_test.yaml` | Quick-test config (1 epoch, CPU, case14) |
+| `examples/config/HGNS_ForecastingOPF_case14.yaml` | Full training config for case14 |
+
+### Modified Files (key changes)
+
+| File | What changed |
+|------|-------------|
+| `gridfm_graphkit/tasks/opf_task.py` | Extracted `_compute_opf_metrics()` so ForecastOPF can reuse physics metrics |
+| `gridfm_graphkit/datasets/powergrid_hetero_dataset.py` | Feature lists extracted as class constants (`BUS_FEATURES`, etc.) |
+| `gridfm_graphkit/training/loss.py` | Added `ForecastBusMSE` and `ForecastGenMSE` loss functions |
+| `gridfm_graphkit/models/gnn_heterogeneous_gns.py` | Decoder outputs 5 bus features for ForecastOPF; physics decoder registered |
+| `gridfm_graphkit/datasets/masking.py` | Added `AddOPFForecastingMask` |
+| `gridfm_graphkit/datasets/task_transforms.py` | Registered forecast mask transform |
+| `gridfm_graphkit/cli.py` | Routes `ForecastOPF` to forecast DataModule |
+| `gridfm_graphkit/datasets/utils.py` | Temporal split logic for chronological train/val/test |
+| `gridfm_graphkit/tasks/__init__.py` | Registered `ForecastOPFTask` import |
+
+### Other Modified (minor / infra)
+- `gridfm_graphkit/__main__.py` — CLI subcommand setup
+- `gridfm_graphkit/datasets/normalizers.py` — minor adjustments
+- `gridfm_graphkit/datasets/hetero_powergrid_datamodule.py` — split logging
+- `gridfm_graphkit/tasks/base_task.py`, `pf_task.py`, `se_task.py`, `utils.py` — minor updates
+- `gridfm_graphkit/models/utils.py` — minor
+- `tests/test_pipeline.py`, `tests/config/datamodule_test_base_config3.yaml` — test updates
+
+### Recommended Review Order
+1. **Start with** `examples/config/forecasting_test.yaml` — understand the task config
+2. **Data layer**: `powergrid_hetero_forecast_dataset.py` → `hetero_powergrid_forecast_datamodule.py`
+3. **Task layer**: `opf_task.py` (see `_compute_opf_metrics`) → `forecast_opf_task.py`
+4. **Model**: `gnn_heterogeneous_gns.py` (search for "ForecastOPF")
+5. **Loss**: `loss.py` (search for "Forecast")
+
+### How to Run
+```bash
+# Quick test (1 epoch, CPU, case14, ~2 min)
+gridfm_graphkit train --config examples/config/forecasting_test.yaml --data_path data/ --exp_name "review" --run_name "quick_test"
+
+# View results
+mlflow ui --backend-store-uri mlruns
+# → open http://localhost:5000
+```
