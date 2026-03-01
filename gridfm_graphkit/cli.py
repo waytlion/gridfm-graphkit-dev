@@ -8,7 +8,7 @@ import torch
 import random
 
 from gridfm_graphkit.io.param_handler import get_task
-from gridfm_graphkit.tasks.compute_ac_dc_metrics import compute_ac_dc_metrics
+
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint
 from lightning.pytorch.loggers import MLFlowLogger
@@ -101,6 +101,7 @@ def main_cli(args):
     compute_dc_ac = getattr(args, "compute_dc_ac_metrics", False)
     if compute_dc_ac:
         sn_mva = config_args.data.baseMVA
+        from gridfm_graphkit.tasks.compute_ac_dc_metrics import compute_ac_dc_metrics
         for grid_name in config_args.data.networks:
             raw_dir = os.path.join(args.data_path, grid_name, "raw")
             print(f"\nComputing ground-truth AC/DC metrics for {grid_name}...")
