@@ -7,31 +7,31 @@ data:
   networks:
   - case14_ieee
   scenarios:
-  - 50
-  test_ratio: 0.1
-  val_ratio: 0.1
-  workers: 2
+  - 2000  # 1 week of hourly data 
+  test_ratio: 0.2
+  val_ratio: 0.2
+  workers: 4  # Reduced for laptop
   split_by_load_scenario_idx: true
-  temporal_split: true 
+  temporal_split: true  
 model:
-  attention_head: 4
-  edge_dim: 10
-  hidden_size: 20
+  attention_head: 4  # Reduced from 8
+  edge_dim: 10  # MUST match actual edge feature dimensions in data
+  hidden_size: 24  # Reduced from 48
   input_bus_dim: 15
   input_gen_dim: 6
-  output_bus_dim: 5 # P_d, Q_d, V_m, V_a, Q_g
+  output_bus_dim: 5 # P_d, Q_d, Q_g, V_m, V_a
   output_gen_dim: 1
-  num_layers: 4
+  num_layers: 3  # Reduced from 12
   type: GNS_heterogeneous
 optimizer:
   beta1: 0.9
   beta2: 0.999
-  learning_rate: 0.0005
+  learning_rate: 0.001  # Slightly higher for faster convergence
   lr_decay: 0.7
-  lr_patience: 5
+  lr_patience: 3  # Reduced from 5
 training:
-  batch_size: 8
-  epochs: 1
+  batch_size: 16  # Reduced from 64
+  epochs: 3  # Reduced from 200
   loss_weights:
   - 0.3
   - 0.3
@@ -44,11 +44,11 @@ training:
   - base_weight: 0.5
   - {}
   - {}
-  accelerator: "cpu"
-  devices: 1
+  accelerator: auto
+  devices: auto
   strategy: auto
 seed: 0
 verbose: true
 callbacks:
-  patience: 100
+  patience: 10  # Reduced from 100
   tol: 0
