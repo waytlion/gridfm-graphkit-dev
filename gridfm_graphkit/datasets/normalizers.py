@@ -11,6 +11,7 @@ from gridfm_graphkit.datasets.globals import (
     PD_H,
     QD_H,
     QG_H,
+    VM_H,
     VA_H,
     MIN_QG_H,
     MAX_QG_H,
@@ -120,9 +121,11 @@ class HeteroDataMVANormalizer(Normalizer):
 
         Attributes:
             baseMVA (float): baseMVA found in casefile. From ``args.data.baseMVA``.
+            task_name (str): Task name for format-aware denormalization.
         """
         self.baseMVA_orig = getattr(args.data, "baseMVA", 100)
         self.baseMVA = None
+        self.task_name = getattr(args.task, "task_name", "OPF")
 
     def to(self, device):
         pass
@@ -297,9 +300,20 @@ class HeteroDataMVANormalizer(Normalizer):
     def inverse_output(self, output, batch):
         bus_output = output["bus"]
         gen_output = output["gen"]
-        bus_output[:, PG_OUT] *= self.baseMVA
-        bus_output[:, QG_OUT] *= self.baseMVA
-        gen_output[:, PG_OUT_GEN] *= self.baseMVA
+        
+        if self.task_name == "ForecastOPF":
+            # ForecastOPF format: [Pd, Qd, Qg, Vm, Va] (5 features)
+            bus_output[:, PD_H] *= self.baseMVA  # Pd at index 0
+            bus_output[:, QD_H] *= self.baseMVA  # Qd at index 1
+            bus_output[:, QG_H] *= self.baseMVA  # Qg at index 2
+            # Vm (index 3) and Va (index 4) remain as-is (p.u. and radians)
+            gen_output[:, PG_OUT_GEN] *= self.baseMVA  # Pg
+        else:
+            # OPF format: [Vm, Va, Pg, Qg] (4 features)
+            bus_output[:, PG_OUT] *= self.baseMVA  # Pg at index 2
+            bus_output[:, QG_OUT] *= self.baseMVA  # Qg at index 3
+            # Vm (index 0) and Va (index 1) remain as-is (p.u. and radians)
+            gen_output[:, PG_OUT_GEN] *= self.baseMVA  # Pg
 
     def get_stats(self) -> dict:
         return {
@@ -325,6 +339,7 @@ class HeteroDataPerSampleMVANormalizer(Normalizer):
         self._baseMVA_lookup = None  # tensor indexed by scenario_id
         self._vn_kv_max_lookup = None
         self._scenario_ids = None  # scenario ids that were fitted (for save/load)
+        self.task_name = getattr(args.task, "task_name", "OPF")
 
     def to(self, device):
         pass
@@ -588,9 +603,19 @@ class HeteroDataPerSampleMVANormalizer(Normalizer):
             b_gen = baseMVA_lookup[sid]
 
         # Scale per-unit power back to MW/Mvar
-        bus_output[:, PG_OUT] *= b_bus
-        bus_output[:, QG_OUT] *= b_bus
-        gen_output[:, PG_OUT_GEN] *= b_gen
+        if self.task_name == "ForecastOPF":
+            # ForecastOPF format: [Pd, Qd, Qg, Vm, Va] (5 features)
+            bus_output[:, PD_H] *= b_bus  # Pd at index 0
+            bus_output[:, QD_H] *= b_bus  # Qd at index 1
+            bus_output[:, QG_H] *= b_bus  # Qg at index 2
+            # Vm (index 3) and Va (index 4) remain as-is (p.u. and radians)
+            gen_output[:, PG_OUT_GEN] *= b_gen  # Pg
+        else:
+            # OPF format: [Vm, Va, Pg, Qg] (4 features)
+            bus_output[:, PG_OUT] *= b_bus  # Pg at index 2
+            bus_output[:, QG_OUT] *= b_bus  # Qg at index 3
+            # Vm (index 0) and Va (index 1) remain as-is (p.u. and radians)
+            gen_output[:, PG_OUT_GEN] *= b_gen  # Pg
 
     def get_stats(self) -> dict:
         """Return dict of stats for saving (baseMVA_orig, scenarios, baseMVA, vn_kv_max tensors)."""
