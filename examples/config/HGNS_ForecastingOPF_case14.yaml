@@ -38,8 +38,8 @@ training:
   - 0.4
   losses:
   - LayeredWeightedPhysics
-  - MaskedGenMSE
-  - MaskedBusMSE
+  - ForecastBusMSE
+  - ForecastGenMSE
   loss_args:
   - base_weight: 0.5
   - {}
