@@ -1,0 +1,54 @@
+task:
+  task_name: ForecastOPF
+data:
+  baseMVA: 100
+  mask_value: 0.0
+  normalization: HeteroDataMVANormalizer
+  networks:
+  - case14_ieee
+  scenarios:
+  - 8760  # 1 year (more robust test, still fast with big batch size)
+  test_ratio: 0.15
+  val_ratio: 0.15
+  workers: 32  # 128 cores available, use more for data loading
+  split_by_load_scenario_idx: true
+  temporal_split: true  
+model:
+  attention_head: 6  # Between minimal (4) and full (8)
+  edge_dim: 10
+  hidden_size: 36  # Between minimal (24) and full (48)
+  input_bus_dim: 15
+  input_gen_dim: 6
+  output_bus_dim: 5 # P_d, Q_d, Q_g, V_m, V_a
+  output_gen_dim: 1
+  num_layers: 6  # Half of full (12), double minimal (3)
+  type: GNS_heterogeneous
+optimizer:
+  beta1: 0.9
+  beta2: 0.999
+  learning_rate: 0.001  # Slightly higher for faster convergence
+  lr_decay: 0.7
+  lr_patience: 4
+training:
+  batch_size: 1024  # A30 has 24GB VRAM, Case14 is tiny -> saturate GPU
+  epochs: 50
+  loss_weights:
+  - 0.3
+  - 0.3
+  - 0.4
+  losses:
+  - LayeredWeightedPhysics
+  - ForecastBusMSE
+  - ForecastGenMSE
+  loss_args:
+  - base_weight: 0.5
+  - {}
+  - {}
+  accelerator: gpu
+  devices: 1  # For Case14 (tiny), 1 A30 is faster than DDP overhead
+  strategy: auto
+seed: 0
+verbose: true
+callbacks:
+  patience: 20  # Will stop early if converged
+  tol: 0
