@@ -34,12 +34,13 @@ training:
   epochs: 3  # Reduced from 200
   loss_weights:
   - 0.3
-  - 0.3
   - 0.4
+  - 0.3
   losses:
   - LayeredWeightedPhysics
-  - ForecastBusMSE
   - ForecastGenMSE
+  - ForecastBusMSE
+
   loss_args:
   - base_weight: 0.5
   - {}
