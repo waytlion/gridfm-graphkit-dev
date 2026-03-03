@@ -7,15 +7,15 @@ data:
   networks:
   - case14_ieee
   scenarios:
-  - 2000  # 1 week of hourly data 
-  test_ratio: 0.2
-  val_ratio: 0.2
+  - 168  # 1 week of hourly data 
+  test_ratio: 0.15
+  val_ratio: 0.15
   workers: 4  # Reduced for laptop
   split_by_load_scenario_idx: true
   temporal_split: true  
 model:
   attention_head: 4  # Reduced from 8
-  edge_dim: 10  # MUST match actual edge feature dimensions in data
+  edge_dim: 10 
   hidden_size: 24  # Reduced from 48
   input_bus_dim: 15
   input_gen_dim: 6
