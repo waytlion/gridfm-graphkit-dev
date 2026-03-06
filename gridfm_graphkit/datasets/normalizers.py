@@ -301,7 +301,7 @@ class HeteroDataMVANormalizer(Normalizer):
         bus_output = output["bus"]
         gen_output = output["gen"]
         
-        if self.task_name == "ForecastOPF":
+        if self.task_name in ("ForecastOPF", "ST_ForecastOPF"):
             # ForecastOPF format: [Pd, Qd, Qg, Vm, Va] (5 features)
             bus_output[:, PD_H] *= self.baseMVA  # Pd at index 0
             bus_output[:, QD_H] *= self.baseMVA  # Qd at index 1
@@ -603,7 +603,7 @@ class HeteroDataPerSampleMVANormalizer(Normalizer):
             b_gen = baseMVA_lookup[sid]
 
         # Scale per-unit power back to MW/Mvar
-        if self.task_name == "ForecastOPF":
+        if self.task_name in ("ForecastOPF", "ST_ForecastOPF"):
             # ForecastOPF format: [Pd, Qd, Qg, Vm, Va] (5 features)
             bus_output[:, PD_H] *= b_bus  # Pd at index 0
             bus_output[:, QD_H] *= b_bus  # Qd at index 1

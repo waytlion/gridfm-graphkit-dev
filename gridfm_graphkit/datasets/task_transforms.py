@@ -60,6 +60,20 @@ class ForecastOPFTransforms(Compose):
         # Pass the list of transforms to Compose
         super().__init__(transforms)
 
+@TRANSFORM_REGISTRY.register("ST_ForecastOPF")
+class ST_ForecastOPFTransforms(Compose):
+    """
+    Transform for ST forecast OPF task - identical to ForecastOPF.
+    All features visible at time t, all features predicted at t+1..t+n.
+    """
+    def __init__(self, args):
+        transforms = []
+        transforms.append(RemoveInactiveBranches())
+        transforms.append(RemoveInactiveGenerators())
+        transforms.append(AddOPFForecastingMask())
+        # No ApplyMasking — same rationale as ForecastOPF
+        super().__init__(transforms)
+
 @TRANSFORM_REGISTRY.register("StateEstimation")
 class StateEstimationTransforms(Compose):
     def __init__(self, args):

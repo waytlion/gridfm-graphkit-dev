@@ -6,6 +6,9 @@ from gridfm_graphkit.training.loss import (
     MaskedGenMSE,
     ForecastBusMSE,
     ForecastGenMSE,
+    ST_ForecastBusMSE,
+    ST_ForecastGenMSE,
+    ST_PhysicsForecastLoss,
 )
 
 __all__ = [
@@ -17,4 +20,8 @@ __all__ = [
     "LossPerDim",
     "ForecastBusMSE",
     "ForecastGenMSE",
+    "ST_ForecastBusMSE",
+    "ST_ForecastGenMSE",
+    "ST_PhysicsForecastLoss",
 ]
+
