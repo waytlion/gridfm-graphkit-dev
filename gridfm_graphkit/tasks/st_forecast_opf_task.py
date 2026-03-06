@@ -2,11 +2,11 @@
 ST-GNN Forecast OPF Task — PyTorch Lightning module for the
 Space-then-Time multi-period AC-OPF forecaster.
 
-Inherits from ReconstructionTask but overrides:
-    - __init__: instantiates ST_GNN_heterogeneous and ST losses
+Inherits from OptimalPowerFlowTask but overrides:
+    - __init__: adds ST-specific losses (model loaded via MODELS_REGISTRY)
     - forward: unpacks collate_temporal dict
     - _shared_step / training_step / validation_step: dual-batch handling
-    - test_step / predict_step: placeholders for Phase 6
+    - test_step / on_test_end: horizon-wise evaluation and CSV output
 
 The dataloader yields dicts from collate_temporal:
     {"folded_batch", "target_batch", "B", "W", "n", "N_bus"}
@@ -16,8 +16,7 @@ import torch
 from pytorch_lightning.utilities import rank_zero_only
 
 from gridfm_graphkit.io.registries import TASK_REGISTRY
-from gridfm_graphkit.tasks.base_task import BaseTask
-from gridfm_graphkit.models.st_gnn_heterogeneous import ST_GNN_heterogeneous
+from gridfm_graphkit.tasks.opf_task import OptimalPowerFlowTask
 from gridfm_graphkit.training.loss import ST_ForecastBusMSE, ST_ForecastGenMSE, ST_PhysicsForecastLoss
 from gridfm_graphkit.datasets.globals import PD_H, QD_H, QG_H, VM_H, VA_H, PG_H
 
@@ -28,7 +27,7 @@ GEN_TARGET_INDICES = [PG_H]                             # -> [Pg]
 
 
 @TASK_REGISTRY.register("ST_ForecastOPF")
-class ST_ForecastOPFTask(BaseTask):
+class ST_ForecastOPFTask(OptimalPowerFlowTask):
     """
     PyTorch Lightning task for ST-GNN multi-period AC-OPF forecasting.
 
@@ -39,14 +38,7 @@ class ST_ForecastOPFTask(BaseTask):
     def __init__(self, args, data_normalizers):
         super().__init__(args, data_normalizers)
 
-        # ---- Model ----
-        self.model = ST_GNN_heterogeneous(
-            args,
-            use_exogenous=getattr(args.model, "use_exogenous", False),
-        )
-
-        # ---- Loss functions ----
-        # Create a simple namespace for loss_args (loss-specific config)
+        # ---- ST-specific loss functions ----
         loss_args = _get_loss_args(args)
 
         self.mse_bus_loss_fn = ST_ForecastBusMSE(loss_args, args)
@@ -58,8 +50,7 @@ class ST_ForecastOPFTask(BaseTask):
         self.lambda_gen = getattr(loss_args, "lambda_gen", 0.1)
         self.lambda_phys = getattr(loss_args, "lambda_phys", 0.1)
 
-        self.batch_size = int(args.training.batch_size)
-        self.test_outputs = {i: [] for i in range(len(args.data.networks))}
+        self.horizon_metrics = {i: [] for i in range(len(args.data.networks))}
 
     # ------------------------------------------------------------------
     # Forward
@@ -189,18 +180,13 @@ class ST_ForecastOPFTask(BaseTask):
         return total_loss
 
     # ------------------------------------------------------------------
-    # Test / Predict (Phase 6 placeholders)
+    # Test
     # ------------------------------------------------------------------
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
-        from gridfm_graphkit.models.utils import (
-            ComputeBranchFlow,
-            ComputeNodeInjection,
-            ComputeNodeResiduals,
-        )
-        from gridfm_graphkit.datasets.globals import MIN_VM_H, MAX_VM_H
+        from torch_scatter import scatter_add
 
-        # 1. Forward pass & basic loss logging
+        # 1. Forward pass
         total_loss, log_dict, pred = self._shared_step(batch, prefix="test")
         dataset_name = self.args.data.networks[dataloader_idx]
 
@@ -208,51 +194,36 @@ class ST_ForecastOPFTask(BaseTask):
         B = batch["B"]
         n = batch["n"]
         N_bus = batch["N_bus"]
-
-        # 2. Extract Voltage Bounds (normalized)
-        target_bus_x = target_batch["bus"].x
         N_gen = target_batch["gen"].x.size(0) // (B * n)
-        
-        # We need the bounds flattened just like the predictions will be [B*n*N_bus]
-        vmin_h_norm = target_bus_x[:, MIN_VM_H]
-        vmax_h_norm = target_bus_x[:, MAX_VM_H]
 
-        # 3. Vectorized Tensor Reshaping for predictions [B*n*N, F]
+        # 2. Flatten predictions to [B*n*N, F] for denormalization
         pred_bus_flat = pred["bus"].permute(0, 2, 1, 3).reshape(B * n * N_bus, 5)
         pred_gen_flat = pred["gen"].permute(0, 2, 1, 3).reshape(B * n * N_gen, 1)
         flat_pred = {"bus": pred_bus_flat, "gen": pred_gen_flat}
 
-        # 4. Denormalize target_batch, flat_pred, and bounds
+        # 3. Denormalize
         self.data_normalizers[dataloader_idx].inverse_transform(target_batch)
         self.data_normalizers[dataloader_idx].inverse_output(flat_pred, target_batch)
-        
-        # To denormalize the bounds using the existing normalizer, we temporarily overwrite
-        # a relevant feature (like VM) in target_batch with our bounds, denormalize, and extract.
-        # But wait - we can just use the target_batch["bus"].x after inverse_transform!
-        vmin_denorm = target_batch["bus"].x[:, MIN_VM_H]
-        vmax_denorm = target_batch["bus"].x[:, MAX_VM_H]
 
-        # Reconstruct targets from denormalized target_batch [B, N, n, F]
+        # 4. Reconstruct 4D targets from denormalized target_batch [B, N_bus, n, F]
         target_bus_4d = target_batch["bus"].x.view(B, n, N_bus, -1).permute(0, 2, 1, 3)
         target_bus = target_bus_4d[..., BUS_TARGET_INDICES]  # [B, N_bus, n, 5]
-
         target_gen_4d = target_batch["gen"].x.view(B, n, N_gen, -1).permute(0, 2, 1, 3)
         target_gen = target_gen_4d[..., GEN_TARGET_INDICES]  # [B, N_gen, n, 1]
 
-        # Reshape denormalized flat_pred back to [B, N, n, F] for MAE
-        pred_bus = flat_pred["bus"].view(B, n, N_bus, 5).permute(0, 2, 1, 3)
-        pred_gen = flat_pred["gen"].view(B, n, N_gen, 1).permute(0, 2, 1, 3)
+        # Reshape flat_pred back to [B, N_bus, n, F] for MAE
+        pred_bus = flat_pred["bus"].view(B, n, N_bus, 5).permute(0, 2, 1, 3)  # [B, N_bus, n, 5]
+        pred_gen = flat_pred["gen"].view(B, n, N_gen, 1).permute(0, 2, 1, 3)  # [B, N_gen, n, 1]
 
-        # 5. Compute & log MAE metrics
+        # 5. Scalar MAE metrics (mean over all dims)
         mae_metrics = {
-            "MAE Pd (MW)":   (pred_bus[..., 0],  target_bus[..., 0]),
-            "MAE Qd (MVar)": (pred_bus[..., 1],  target_bus[..., 1]),
-            "MAE Qg (MVar)": (pred_bus[..., 2],  target_bus[..., 2]),
-            "MAE Vm (p.u.)": (pred_bus[..., 3],  target_bus[..., 3]),
-            "MAE Va (rad)":  (pred_bus[..., 4],  target_bus[..., 4]),
-            "MAE Pg (MW)":   (pred_gen[..., 0],  target_gen[..., 0]),
+            "MAE Pd (MW)":   (pred_bus[..., 0], target_bus[..., 0]),
+            "MAE Qd (MVar)": (pred_bus[..., 1], target_bus[..., 1]),
+            "MAE Qg (MVar)": (pred_bus[..., 2], target_bus[..., 2]),
+            "MAE Vm (p.u.)": (pred_bus[..., 3], target_bus[..., 3]),
+            "MAE Va (rad)":  (pred_bus[..., 4], target_bus[..., 4]),
+            "MAE Pg (MW)":   (pred_gen[..., 0], target_gen[..., 0]),
         }
-        
         for name, (p, tgt) in mae_metrics.items():
             self.log(
                 f"{dataset_name}/{name}",
@@ -262,68 +233,73 @@ class ST_ForecastOPFTask(BaseTask):
                 sync_dist=True,
             )
 
-        # 6. Vectorized OPF format construction [B*n*N_bus, 4]
-        from torch_scatter import scatter_add
+        # 6. Horizon-wise MAE: mean over (B, N_bus) dims -> [n, F]
+        # pred_bus shape: [B, N_bus, n, 5]  dims: 0=B, 1=N_bus, 2=n, 3=F
+        abs_err_bus = torch.abs(pred_bus - target_bus)   # [B, N_bus, n, 5]
+        abs_err_gen = torch.abs(pred_gen - target_gen)   # [B, N_gen, n, 1]
+        horizon_mae_bus = abs_err_bus.mean(dim=(0, 1))   # [n, 5]
+        horizon_mae_gen = abs_err_gen.mean(dim=(0, 1))   # [n, 1]
+        # Store as [n, 6] tensor with columns [Pd, Qd, Qg, Vm, Va, Pg]
+        horizon_mae = torch.cat([horizon_mae_bus, horizon_mae_gen], dim=-1)  # [n, 6]
+        self.horizon_metrics[dataloader_idx].append(horizon_mae.detach().cpu())
+
+        # 7. Build OPF-format tensors [B*n*N_bus, 4] for _compute_opf_metrics
         _, gen_to_bus_index = target_batch.edge_index_dict[("gen", "connected_to", "bus")]
-        agg_gen_on_bus = scatter_add(
+        agg_pg = scatter_add(
             flat_pred["gen"],
             gen_to_bus_index,
             dim=0,
             dim_size=B * n * N_bus,
         )
-        
-        # Forecast order is [Pd, Qd, Qg, Vm, Va]
-        # OPF order is [Vm, Va, Pg, Qg]
-        bus_data_opf = torch.stack(
-            [
-                flat_pred["bus"][:, 3],  # Vm
-                flat_pred["bus"][:, 4],  # Va
-                agg_gen_on_bus.squeeze(), # Pg
-                flat_pred["bus"][:, 2],  # Qg
-            ],
-            dim=1,
+        output_opf = {
+            "bus": torch.stack(
+                [
+                    flat_pred["bus"][:, 3],  # Vm
+                    flat_pred["bus"][:, 4],  # Va
+                    agg_pg.squeeze(),         # Pg aggregated
+                    flat_pred["bus"][:, 2],  # Qg
+                ],
+                dim=1,
+            ),
+            "gen": flat_pred["gen"],
+        }
+        _, gen_to_bus_index_tgt = target_batch.edge_index_dict[("gen", "connected_to", "bus")]
+        agg_pg_tgt = scatter_add(
+            target_gen_4d.permute(0, 2, 1, 3).reshape(B * n * N_gen, 1),
+            gen_to_bus_index_tgt,
+            dim=0,
+            dim_size=B * n * N_bus,
+        )
+        target_opf = {
+            "bus": torch.stack(
+                [
+                    target_bus[..., 3].permute(0, 2, 1).reshape(B * n * N_bus),  # Vm
+                    target_bus[..., 4].permute(0, 2, 1).reshape(B * n * N_bus),  # Va
+                    agg_pg_tgt.squeeze(),                                          # Pg
+                    target_bus[..., 2].permute(0, 2, 1).reshape(B * n * N_bus),  # Qg
+                ],
+                dim=1,
+            ),
+            "gen": target_gen_4d.permute(0, 2, 1, 3).reshape(B * n * N_gen, 1),
+        }
+
+        # 8. Delegate OPF physics/cost/constraint metrics to parent
+        opf_metrics = self._compute_opf_metrics(
+            output_opf, target_opf, target_batch, dataset_name, dataloader_idx,
         )
 
-        # 7. Physics Execution
-        # Vm Violations
-        vm_pred = bus_data_opf[:, 0]
-        vm_violations = (vm_pred > vmax_denorm) | (vm_pred < vmin_denorm)
-        vm_violation_rate = vm_violations.float().mean() * 100.0
-
-        # Power Residuals
-        branch_flow_layer = ComputeBranchFlow()
-        node_injection_layer = ComputeNodeInjection()
-        node_residuals_layer = ComputeNodeResiduals()
-
-        bus_edge_index = target_batch.edge_index_dict[("bus", "connects", "bus")]
-        bus_edge_attr = target_batch.edge_attr_dict[("bus", "connects", "bus")]
-
-        Pft, Qft = branch_flow_layer(bus_data_opf, bus_edge_index, bus_edge_attr)
-        P_in, Q_in = node_injection_layer(Pft, Qft, bus_edge_index, B * n * N_bus)
-        residual_P, residual_Q = node_residuals_layer(
-            P_in,
-            Q_in,
-            bus_data_opf,
-            target_batch["bus"].x,
-        )
-
-        active_power_loss = torch.mean(torch.abs(residual_P))
-        reactive_power_loss = torch.mean(torch.abs(residual_Q))
-
-        # Log Physics metrics
-        self.log(f"{dataset_name}/Vm violation rate (%)", vm_violation_rate, batch_size=B, add_dataloader_idx=False, sync_dist=True)
-        self.log(f"{dataset_name}/Active Power Loss", active_power_loss, batch_size=B, add_dataloader_idx=False, sync_dist=True)
-        self.log(f"{dataset_name}/Reactive Power Loss", reactive_power_loss, batch_size=B, add_dataloader_idx=False, sync_dist=True)
-
-        log_dict["Test loss"] = total_loss.detach()
-        self.log_dict(
-            log_dict,
-            batch_size=B,
-            sync_dist=True,
-            on_epoch=True,
-            on_step=False,
-            logger=True,
-        )
+        # 9. Log all test metrics
+        test_metrics = {**opf_metrics}
+        test_metrics["Test loss"] = total_loss.detach()
+        for metric, value in test_metrics.items():
+            self.log(
+                f"{dataset_name}/{metric}",
+                value,
+                batch_size=B,
+                add_dataloader_idx=False,
+                sync_dist=True,
+                logger=False,
+            )
         return total_loss
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
@@ -335,7 +311,7 @@ class ST_ForecastOPFTask(BaseTask):
         import pandas as pd
         from lightning.pytorch.loggers import MLFlowLogger
 
-        # Get artifact directory
+        # Get artifact directory (same logic as parent)
         if isinstance(self.logger, MLFlowLogger):
             artifact_dir = os.path.join(
                 self.logger.save_dir,
@@ -345,59 +321,30 @@ class ST_ForecastOPFTask(BaseTask):
             )
         else:
             artifact_dir = self.logger.save_dir
-        
-        # Collect metrics
-        final_metrics = self.trainer.callback_metrics
-        grouped_metrics = {}
-        
-        for full_key, value in final_metrics.items():
-            try:
-                value = value.item()
-            except AttributeError:
-                pass
-            
-            if "/" in full_key:
-                dataset_name, metric = full_key.split("/", 1)
-                if dataset_name not in grouped_metrics:
-                    grouped_metrics[dataset_name] = {}
-                grouped_metrics[dataset_name][metric] = value
-        
-        # Create forecast CSV
-        for dataset, metrics in grouped_metrics.items():
-            data_forecast = {
-                "Feature": ["Pd", "Qd", "Pg", "Qg", "Vm", "Va"],
-                "MAE": [
-                    metrics.get("MAE Pd (MW)", float("nan")),
-                    metrics.get("MAE Qd (MVar)", float("nan")),
-                    metrics.get("MAE Pg (MW)", float("nan")),
-                    metrics.get("MAE Qg (MVar)", float("nan")),
-                    metrics.get("MAE Vm (p.u.)", float("nan")),
-                    metrics.get("MAE Va (rad)", float("nan")),
-                ],
-            }
-            df_forecast = pd.DataFrame(data_forecast)
-            
-            test_dir = os.path.join(artifact_dir, "test")
-            os.makedirs(test_dir, exist_ok=True)
-            forecast_csv_path = os.path.join(test_dir, f"{dataset}_forecast_MAE.csv")
-            metrics_csv_path = os.path.join(test_dir, f"{dataset}_metrics.csv")
-            df_forecast.to_csv(forecast_csv_path, index=False)
-            
-            data_metrics = {
-                "Metric": [
-                    "Avg. active res. (MW)",
-                    "Avg. reactive res. (MVar)",
-                    "Vm violation rate (%)",
-                ],
-                "Value": [
-                    metrics.get("Active Power Loss", float("nan")),
-                    metrics.get("Reactive Power Loss", float("nan")),
-                    metrics.get("Vm violation rate (%)", float("nan")),
-                ],
-            }
-            pd.DataFrame(data_metrics).to_csv(metrics_csv_path, index=False)
 
-        self.test_outputs.clear()
+        test_dir = os.path.join(artifact_dir, "test")
+        os.makedirs(test_dir, exist_ok=True)
+
+        # Write horizon-wise MAE CSV per dataset
+        # Columns: [Pd, Qd, Qg, Vm, Va, Pg], index: timestep t (1..n)
+        for dataset_idx, batch_maes in self.horizon_metrics.items():
+            if not batch_maes:
+                continue
+            dataset_name = self.args.data.networks[dataset_idx]
+            # Average across all test batches: each entry is [n, 6]
+            horizon_mae = torch.stack(batch_maes, dim=0).mean(dim=0)  # [n, 6]
+            df_horizon = pd.DataFrame(
+                horizon_mae.numpy(),
+                columns=["Pd (MW)", "Qd (MVar)", "Qg (MVar)", "Vm (p.u.)", "Va (rad)", "Pg (MW)"],
+                index=pd.RangeIndex(start=1, stop=horizon_mae.size(0) + 1, name="t"),
+            )
+            horizon_csv_path = os.path.join(test_dir, f"{dataset_name}_horizon_MAE.csv")
+            df_horizon.to_csv(horizon_csv_path)
+
+        self.horizon_metrics.clear()
+
+        # Delegate forecast_MAE CSV + RMSE.csv + metrics.csv to parent chain
+        super().on_test_end()
 
 
 # ======================================================================
