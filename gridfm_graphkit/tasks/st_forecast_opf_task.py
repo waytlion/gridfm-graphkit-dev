@@ -17,7 +17,6 @@ from pytorch_lightning.utilities import rank_zero_only
 
 from gridfm_graphkit.io.registries import TASK_REGISTRY
 from gridfm_graphkit.tasks.opf_task import OptimalPowerFlowTask
-from gridfm_graphkit.training.loss import ST_ForecastBusMSE, ST_ForecastGenMSE, ST_PhysicsForecastLoss
 from gridfm_graphkit.datasets.globals import PD_H, QD_H, QG_H, VM_H, VA_H, PG_H
 
 
@@ -37,19 +36,6 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
 
     def __init__(self, args, data_normalizers):
         super().__init__(args, data_normalizers)
-
-        # ---- ST-specific loss functions ----
-        loss_args = _get_loss_args(args)
-
-        self.mse_bus_loss_fn = ST_ForecastBusMSE(loss_args, args)
-        self.mse_gen_loss_fn = ST_ForecastGenMSE(loss_args, args)
-        self.physics_loss_fn = ST_PhysicsForecastLoss(loss_args, args)
-
-        # Loss weights
-        self.lambda_mse = getattr(loss_args, "lambda_mse", 1.0)
-        self.lambda_gen = getattr(loss_args, "lambda_gen", 0.1)
-        self.lambda_phys = getattr(loss_args, "lambda_phys", 0.1)
-
         self.horizon_metrics = {i: [] for i in range(len(args.data.networks))}
 
     # ------------------------------------------------------------------
@@ -99,42 +85,24 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
 
         target = {"bus": target_bus, "gen": target_gen}
 
-        # --- MSE losses ---
-        mse_bus_out = self.mse_bus_loss_fn(pred, target)
-        mse_gen_out = self.mse_gen_loss_fn(pred, target)
-
-        # --- Physics loss ---
         mask = {
             "B": B,
             "n": n,
             "N_bus": N_bus,
-            "bus_x": target_batch["bus"].x,  # [B*n*N_bus, F] for physics decoder
+            "bus_x": target_batch["bus"].x,
         }
-        phys_out = self.physics_loss_fn(
+
+        loss_dict = self.loss_fn(
             pred, target,
             target_batch.edge_index_dict,
             target_batch.edge_attr_dict,
             mask,
         )
+        total_loss = loss_dict.pop("loss")
 
-        # --- Weighted total ---
-        total_loss = (
-            self.lambda_mse * mse_bus_out["loss"]
-            + self.lambda_gen * mse_gen_out["loss"]
-            + self.lambda_phys * phys_out["loss"]
-        )
-
-        # --- Logging dict ---
         log_dict = {f"{prefix}/total_loss": total_loss.detach()}
-        for key, val in mse_bus_out.items():
-            if key != "loss":
-                log_dict[f"{prefix}/{key}"] = val.detach() if isinstance(val, torch.Tensor) else val
-        for key, val in mse_gen_out.items():
-            if key != "loss":
-                log_dict[f"{prefix}/{key}"] = val.detach() if isinstance(val, torch.Tensor) else val
-        for key, val in phys_out.items():
-            if key != "loss":
-                log_dict[f"{prefix}/{key}"] = val.detach() if isinstance(val, torch.Tensor) else val
+        for key, val in loss_dict.items():
+            log_dict[f"{prefix}/{key}"] = val.detach() if isinstance(val, torch.Tensor) else val
 
         return total_loss, log_dict, pred
 
@@ -347,26 +315,4 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         super().on_test_end()
 
 
-# ======================================================================
-# Helper
-# ======================================================================
 
-class _LossArgNamespace:
-    """Minimal namespace to pass loss_args to loss constructors."""
-    pass
-
-
-def _get_loss_args(args):
-    """Extract ST loss config from args, with defaults."""
-    ns = _LossArgNamespace()
-    training = getattr(args, "training", None)
-    st_loss = None
-    if training is not None:
-        st_loss = getattr(training, "st_loss", None)
-
-    ns.lambda_load = getattr(st_loss, "lambda_load", 0.5) if st_loss else 0.5
-    ns.lambda_opf = getattr(st_loss, "lambda_opf", 0.5) if st_loss else 0.5
-    ns.lambda_mse = getattr(st_loss, "lambda_mse", 1.0) if st_loss else 1.0
-    ns.lambda_gen = getattr(st_loss, "lambda_gen", 0.1) if st_loss else 0.1
-    ns.lambda_phys = getattr(st_loss, "lambda_phys", 0.1) if st_loss else 0.1
-    return ns
