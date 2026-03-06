@@ -233,7 +233,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         }
         _, gen_to_bus_index_tgt = target_batch.edge_index_dict[("gen", "connected_to", "bus")]
         agg_pg_tgt = scatter_add(
-            target_gen_4d.permute(0, 2, 1, 3).reshape(B * n * N_gen, 1),
+            target_gen.permute(0, 2, 1, 3).reshape(B * n * N_gen, 1),
             gen_to_bus_index_tgt,
             dim=0,
             dim_size=B * n * N_bus,
@@ -248,7 +248,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                 ],
                 dim=1,
             ),
-            "gen": target_gen_4d.permute(0, 2, 1, 3).reshape(B * n * N_gen, 1),
+            "gen": target_gen.permute(0, 2, 1, 3).reshape(B * n * N_gen, 1),
         }
 
         # 8. Delegate OPF physics/cost/constraint metrics to parent
