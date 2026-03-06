@@ -341,3 +341,141 @@ class ForecastGenMSE(BaseLoss):
     def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
         loss_gen = F.mse_loss(pred["gen"], target["gen"], reduction="mean")
         return {"loss": loss_gen, "Forecast gen MSE": loss_gen.detach()}
+
+
+# ======================================================================
+# ST-GNN specific losses
+# ======================================================================
+
+@LOSS_REGISTRY.register("ST_ForecastBusMSE")
+class ST_ForecastBusMSE(BaseLoss):
+    """
+    Weighted MSE for ST-GNN bus forecast output.
+
+    Splits the 5-dim bus prediction [Pd, Qd, Qg, Vm, Va] into:
+        - load component (Pd, Qd):  indices [0:2], weighted by lambda_load
+        - OPF component  (Qg, Vm, Va): indices [2:5], weighted by lambda_opf
+
+    Expected shapes:
+        pred["bus"]:   [B, N_bus, n, 5]
+        target["bus"]: [B, N_bus, n, 5]  (same layout: [Pd, Qd, Qg, Vm, Va])
+    """
+
+    def __init__(self, loss_args, args):
+        super().__init__()
+        self.lambda_load = getattr(loss_args, "lambda_load", 0.5)
+        self.lambda_opf = getattr(loss_args, "lambda_opf", 0.5)
+
+    def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
+        pred_load = pred["bus"][..., 0:2]    # [B, N_bus, n, 2]: Pd, Qd
+        pred_opf = pred["bus"][..., 2:5]     # [B, N_bus, n, 3]: Qg, Vm, Va
+
+        target_load = target["bus"][..., 0:2]
+        target_opf = target["bus"][..., 2:5]
+
+        loss_load = F.mse_loss(pred_load, target_load, reduction="mean")
+        loss_opf = F.mse_loss(pred_opf, target_opf, reduction="mean")
+
+        total = self.lambda_load * loss_load + self.lambda_opf * loss_opf
+
+        return {
+            "loss": total,
+            "ST load MSE (Pd,Qd)": loss_load.detach(),
+            "ST OPF MSE (Qg,Vm,Va)": loss_opf.detach(),
+        }
+
+
+@LOSS_REGISTRY.register("ST_ForecastGenMSE")
+class ST_ForecastGenMSE(BaseLoss):
+    """
+    MSE for ST-GNN gen forecast output.
+
+    Expected shapes:
+        pred["gen"]:   [B, N_gen, n, 1]
+        target["gen"]: [B, N_gen, n, 1]
+    """
+
+    def __init__(self, loss_args, args):
+        super().__init__()
+
+    def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
+        loss_gen = F.mse_loss(pred["gen"], target["gen"], reduction="mean")
+        return {"loss": loss_gen, "ST gen MSE (Pg)": loss_gen.detach()}
+
+
+@LOSS_REGISTRY.register("ST_PhysicsForecastLoss")
+class ST_PhysicsForecastLoss(BaseLoss):
+    """
+    Physics-informed loss for ST-GNN forecast output.
+
+    Flattens the multi-step predictions to [B*n*N_bus, 2] and runs
+    them through the existing physics layers (ComputeBranchFlow,
+    ComputeNodeInjection, ComputeNodeResiduals) to compute power
+    balance residuals (delta_P, delta_Q).
+
+    Expected inputs:
+        pred["bus"]:   [B, N_bus, n, 5]   forecast [Pd, Qd, Qg, Vm, Va]
+        pred["gen"]:   [B, N_gen, n, 1]   forecast [Pg]
+        edge_index:    dict from target_batch.edge_index_dict
+        edge_attr:     dict from target_batch.edge_attr_dict
+        mask:          dict containing:
+            "bus_x":   [B*n*N_bus, F_bus]  original target bus features (for Pd, Qd, GS, BS)
+            "B":       int, batch size
+            "n":       int, forecast horizon
+            "N_bus":   int, buses per graph
+    """
+
+    def __init__(self, loss_args, args):
+        super().__init__()
+        from gridfm_graphkit.models.utils import (
+            ComputeBranchFlow,
+            ComputeNodeInjection,
+            ComputeNodeResiduals,
+        )
+        self.branch_flow_layer = ComputeBranchFlow()
+        self.node_injection_layer = ComputeNodeInjection()
+        self.node_residuals_layer = ComputeNodeResiduals()
+
+    def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
+        B = mask["B"]
+        n = mask["n"]
+        N_bus = mask["N_bus"]
+        bus_x_orig = mask["bus_x"]  # [B*n*N_bus, F_bus]
+
+        # --- Flatten predictions to [B*n*N, ...] matching target_batch topology ---
+        pred_bus_flat = pred["bus"].permute(0, 2, 1, 3).reshape(-1, 5) # [B, N_bus, n, 5]  -> [B*n*N_bus, 5]
+        pred_gen_flat = pred["gen"].permute(0, 2, 1, 3).reshape(-1, 1) # [B, N_gen, n, 1] -> [B*n*N_gen, 1]
+
+        Vm = pred_bus_flat[:, 3]   # Vm (idx 3), [B*n*N_bus]
+        Va = pred_bus_flat[:, 4]   # Va (idx 4), [B*n*N_bus]
+        Qg = pred_bus_flat[:, 2]   # Qg (idx 2), [B*n*N_bus]
+
+        # Scatter Pg from generators to buses
+        edge_index_gb = edge_index[("gen", "connected_to", "bus")]
+        num_bus_total = B * n * N_bus
+        Pg_bus = scatter_add(
+            pred_gen_flat[:, 0],
+            edge_index_gb[1],
+            dim=0,
+            dim_size=num_bus_total,
+        )
+
+        # Construct bus_data_pred: [B*n*N_bus, 4] matching [VM_OUT, VA_OUT, PG_OUT, QG_OUT]
+        bus_data_pred = torch.stack([Vm, Va, Pg_bus, Qg], dim=-1)
+
+        # --- Physics pipeline ---
+        edge_index_bb = edge_index[("bus", "connects", "bus")]
+        edge_attr_bb = edge_attr[("bus", "connects", "bus")]
+
+        Pft, Qft = self.branch_flow_layer(bus_data_pred, edge_index_bb, edge_attr_bb)
+        P_in, Q_in = self.node_injection_layer(Pft, Qft, edge_index_bb, num_bus_total)
+        res_P, res_Q = self.node_residuals_layer(P_in, Q_in, bus_data_pred, bus_x_orig)
+
+        # Scalar loss = mean squared residuals
+        loss = torch.mean(res_P ** 2 + res_Q ** 2)
+
+        return {
+            "loss": loss,
+            "ST Physics Loss": loss.detach(),
+        }
+

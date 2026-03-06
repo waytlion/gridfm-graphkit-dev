@@ -15,7 +15,15 @@ class HeteroGridForecastDatasetDisk(HeteroGridDatasetDisk):
     
     Input:  x_dict at time t
     Target: y_dict at time t+1
+
+    Uses 'processed_forecast/' to avoid collisions with base class
+    (which writes individual scenarios to 'processed/').
     """
+
+    @property
+    def processed_dir(self) -> str:
+        return osp.join(self.root, "processed_forecast")
+
 
     def process(self):
         print("LOADING DATA")

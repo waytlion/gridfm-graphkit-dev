@@ -1,5 +1,6 @@
 from gridfm_graphkit.datasets.hetero_powergrid_datamodule import LitGridHeteroDataModule
 from gridfm_graphkit.datasets.hetero_powergrid_forecast_datamodule import LitGridHeteroForecastDataModule
+from gridfm_graphkit.datasets.hetero_powergrid_temporal_datamodule import LitGridHeteroTemporalDataModule
 from gridfm_graphkit.io.param_handler import NestedNamespace
 from gridfm_graphkit.training.callbacks import SaveBestModelStateDict
 import numpy as np
@@ -57,6 +58,10 @@ def main_cli(args):
     normalizer_stats_path = getattr(args, "normalizer_stats", None)
     if config_args.task.task_name in ["ForecastOPF"]:
         litGrid = LitGridHeteroForecastDataModule(
+            config_args, args.data_path, normalizer_stats_path=normalizer_stats_path
+        )
+    elif config_args.task.task_name in ["ST_ForecastOPF"]:
+        litGrid = LitGridHeteroTemporalDataModule(
             config_args, args.data_path, normalizer_stats_path=normalizer_stats_path
         )
     else:
