@@ -14,7 +14,7 @@ data:
   split_by_load_scenario_idx: true
   temporal_split: true
   # ST-GNN temporal parameters
-  temporal_window: 48       # W: lookback window (48 hourly snapshots = 2 days)
+  temporal_window: 168       # W: lookback window (168 hourly snapshots = 1 week)
   forecast_horizon: 1       # n: number of target steps ahead
 model:
   type: ST_GNN_heterogeneous

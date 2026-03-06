@@ -193,10 +193,65 @@ class ST_ForecastOPFTask(BaseTask):
     # ------------------------------------------------------------------
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
+        # 1. Forward pass & basic loss logging
         total_loss, log_dict = self._shared_step(batch, prefix="test")
+        dataset_name = self.args.data.networks[dataloader_idx]
+
+        # 2. Get predictions directly
+        pred = self(batch)
+
+        target_batch = batch["target_batch"]
+        B = batch["B"]
+        n = batch["n"]
+        N_bus = batch["N_bus"]
+
+        # 3. Reshape predictions to match PyG Batch node ordering [B*n*nodes, F]
+        target_gen_x = target_batch["gen"].x
+        N_gen = target_gen_x.size(0) // (B * n)
+
+        pred_bus_flat = pred["bus"].permute(0, 2, 1, 3).reshape(B * n * N_bus, 5)
+        pred_gen_flat = pred["gen"].permute(0, 2, 1, 3).reshape(B * n * N_gen, 1)
+        flat_pred = {"bus": pred_bus_flat, "gen": pred_gen_flat}
+
+        # 4. Denormalize both target_batch and flat_pred
+        self.data_normalizers[dataloader_idx].inverse_transform(target_batch)
+        self.data_normalizers[dataloader_idx].inverse_output(flat_pred, target_batch)
+
+        # 5. Reconstruct targets from denormalized target_batch
+        target_bus_x = target_batch["bus"].x
+        target_bus_4d = target_bus_x.view(B, n, N_bus, -1).permute(0, 2, 1, 3)
+        target_bus = target_bus_4d[..., BUS_TARGET_INDICES]  # [B, N_bus, n, 5]
+
+        target_gen_4d = target_gen_x.view(B, n, N_gen, -1).permute(0, 2, 1, 3)
+        target_gen = target_gen_4d[..., GEN_TARGET_INDICES]  # [B, N_gen, n, 1]
+
+        # 6. Reshape denormalized flat_pred back to [B, N, n, F]
+        pred_bus = flat_pred["bus"].view(B, n, N_bus, 5).permute(0, 2, 1, 3)
+        pred_gen = flat_pred["gen"].view(B, n, N_gen, 1).permute(0, 2, 1, 3)
+
+        # 7. Compute & log MAE metrics
+        mae_metrics = {
+            "MAE Pd (MW)":   (pred_bus[..., 0],  target_bus[..., 0]),
+            "MAE Qd (MVar)": (pred_bus[..., 1],  target_bus[..., 1]),
+            "MAE Qg (MVar)": (pred_bus[..., 2],  target_bus[..., 2]),
+            "MAE Vm (p.u.)": (pred_bus[..., 3],  target_bus[..., 3]),
+            "MAE Va (rad)":  (pred_bus[..., 4],  target_bus[..., 4]),
+            "MAE Pg (MW)":   (pred_gen[..., 0],  target_gen[..., 0]),
+        }
+        
+        for name, (p, tgt) in mae_metrics.items():
+            self.log(
+                f"{dataset_name}/{name}",
+                torch.mean(torch.abs(p - tgt)),
+                batch_size=B,
+                add_dataloader_idx=False,
+                sync_dist=True,
+            )
+
+        log_dict["Test loss"] = total_loss.detach()
         self.log_dict(
             log_dict,
-            batch_size=batch["B"],
+            batch_size=B,
             sync_dist=True,
             on_epoch=True,
             on_step=False,
@@ -209,6 +264,57 @@ class ST_ForecastOPFTask(BaseTask):
 
     @rank_zero_only
     def on_test_end(self):
+        import os
+        import pandas as pd
+        from lightning.pytorch.loggers import MLFlowLogger
+
+        # Get artifact directory
+        if isinstance(self.logger, MLFlowLogger):
+            artifact_dir = os.path.join(
+                self.logger.save_dir,
+                self.logger.experiment_id,
+                self.logger.run_id,
+                "artifacts",
+            )
+        else:
+            artifact_dir = self.logger.save_dir
+        
+        # Collect metrics
+        final_metrics = self.trainer.callback_metrics
+        grouped_metrics = {}
+        
+        for full_key, value in final_metrics.items():
+            try:
+                value = value.item()
+            except AttributeError:
+                pass
+            
+            if "/" in full_key:
+                dataset_name, metric = full_key.split("/", 1)
+                if dataset_name not in grouped_metrics:
+                    grouped_metrics[dataset_name] = {}
+                grouped_metrics[dataset_name][metric] = value
+        
+        # Create forecast CSV
+        for dataset, metrics in grouped_metrics.items():
+            data_forecast = {
+                "Feature": ["Pd", "Qd", "Pg", "Qg", "Vm", "Va"],
+                "MAE": [
+                    metrics.get("MAE Pd (MW)", float("nan")),
+                    metrics.get("MAE Qd (MVar)", float("nan")),
+                    metrics.get("MAE Pg (MW)", float("nan")),
+                    metrics.get("MAE Qg (MVar)", float("nan")),
+                    metrics.get("MAE Vm (p.u.)", float("nan")),
+                    metrics.get("MAE Va (rad)", float("nan")),
+                ],
+            }
+            df_forecast = pd.DataFrame(data_forecast)
+            
+            test_dir = os.path.join(artifact_dir, "test")
+            os.makedirs(test_dir, exist_ok=True)
+            forecast_csv_path = os.path.join(test_dir, f"{dataset}_forecast_MAE.csv")
+            df_forecast.to_csv(forecast_csv_path, index=False)
+
         self.test_outputs.clear()
 
 

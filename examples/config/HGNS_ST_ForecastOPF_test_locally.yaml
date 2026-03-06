@@ -40,7 +40,7 @@ optimizer:
   lr_patience: 5
 training:
   batch_size: 32            # reduced from 64 due to B*W folding
-  epochs: 2
+  epochs: 20
   # ST-GNN loss weights
   st_loss:
     lambda_load: 0.8        # weight for Pd,Qd MSE inside ST_ForecastBusMSE
