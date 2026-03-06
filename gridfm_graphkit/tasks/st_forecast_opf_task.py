@@ -145,14 +145,14 @@ class ST_ForecastOPFTask(BaseTask):
             if key != "loss":
                 log_dict[f"{prefix}/{key}"] = val.detach() if isinstance(val, torch.Tensor) else val
 
-        return total_loss, log_dict
+        return total_loss, log_dict, pred
 
     # ------------------------------------------------------------------
     # Training
     # ------------------------------------------------------------------
 
     def training_step(self, batch, batch_idx):
-        total_loss, log_dict = self._shared_step(batch, prefix="train")
+        total_loss, log_dict, _ = self._shared_step(batch, prefix="train")
 
         # Log LR
         current_lr = self.optimizers().param_groups[0]["lr"]
@@ -173,7 +173,7 @@ class ST_ForecastOPFTask(BaseTask):
     # ------------------------------------------------------------------
 
     def validation_step(self, batch, batch_idx):
-        total_loss, log_dict = self._shared_step(batch, prefix="val")
+        total_loss, log_dict, _ = self._shared_step(batch, prefix="val")
 
         # Lightning needs "Validation loss" for ReduceLROnPlateau monitor
         log_dict["Validation loss"] = total_loss.detach()
@@ -193,43 +193,57 @@ class ST_ForecastOPFTask(BaseTask):
     # ------------------------------------------------------------------
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
-        # 1. Forward pass & basic loss logging
-        total_loss, log_dict = self._shared_step(batch, prefix="test")
-        dataset_name = self.args.data.networks[dataloader_idx]
+        from gridfm_graphkit.models.utils import (
+            ComputeBranchFlow,
+            ComputeNodeInjection,
+            ComputeNodeResiduals,
+        )
+        from gridfm_graphkit.datasets.globals import MIN_VM_H, MAX_VM_H
 
-        # 2. Get predictions directly
-        pred = self(batch)
+        # 1. Forward pass & basic loss logging
+        total_loss, log_dict, pred = self._shared_step(batch, prefix="test")
+        dataset_name = self.args.data.networks[dataloader_idx]
 
         target_batch = batch["target_batch"]
         B = batch["B"]
         n = batch["n"]
         N_bus = batch["N_bus"]
 
-        # 3. Reshape predictions to match PyG Batch node ordering [B*n*nodes, F]
-        target_gen_x = target_batch["gen"].x
-        N_gen = target_gen_x.size(0) // (B * n)
+        # 2. Extract Voltage Bounds (normalized)
+        target_bus_x = target_batch["bus"].x
+        N_gen = target_batch["gen"].x.size(0) // (B * n)
+        
+        # We need the bounds flattened just like the predictions will be [B*n*N_bus]
+        vmin_h_norm = target_bus_x[:, MIN_VM_H]
+        vmax_h_norm = target_bus_x[:, MAX_VM_H]
 
+        # 3. Vectorized Tensor Reshaping for predictions [B*n*N, F]
         pred_bus_flat = pred["bus"].permute(0, 2, 1, 3).reshape(B * n * N_bus, 5)
         pred_gen_flat = pred["gen"].permute(0, 2, 1, 3).reshape(B * n * N_gen, 1)
         flat_pred = {"bus": pred_bus_flat, "gen": pred_gen_flat}
 
-        # 4. Denormalize both target_batch and flat_pred
+        # 4. Denormalize target_batch, flat_pred, and bounds
         self.data_normalizers[dataloader_idx].inverse_transform(target_batch)
         self.data_normalizers[dataloader_idx].inverse_output(flat_pred, target_batch)
+        
+        # To denormalize the bounds using the existing normalizer, we temporarily overwrite
+        # a relevant feature (like VM) in target_batch with our bounds, denormalize, and extract.
+        # But wait - we can just use the target_batch["bus"].x after inverse_transform!
+        vmin_denorm = target_batch["bus"].x[:, MIN_VM_H]
+        vmax_denorm = target_batch["bus"].x[:, MAX_VM_H]
 
-        # 5. Reconstruct targets from denormalized target_batch
-        target_bus_x = target_batch["bus"].x
-        target_bus_4d = target_bus_x.view(B, n, N_bus, -1).permute(0, 2, 1, 3)
+        # Reconstruct targets from denormalized target_batch [B, N, n, F]
+        target_bus_4d = target_batch["bus"].x.view(B, n, N_bus, -1).permute(0, 2, 1, 3)
         target_bus = target_bus_4d[..., BUS_TARGET_INDICES]  # [B, N_bus, n, 5]
 
-        target_gen_4d = target_gen_x.view(B, n, N_gen, -1).permute(0, 2, 1, 3)
+        target_gen_4d = target_batch["gen"].x.view(B, n, N_gen, -1).permute(0, 2, 1, 3)
         target_gen = target_gen_4d[..., GEN_TARGET_INDICES]  # [B, N_gen, n, 1]
 
-        # 6. Reshape denormalized flat_pred back to [B, N, n, F]
+        # Reshape denormalized flat_pred back to [B, N, n, F] for MAE
         pred_bus = flat_pred["bus"].view(B, n, N_bus, 5).permute(0, 2, 1, 3)
         pred_gen = flat_pred["gen"].view(B, n, N_gen, 1).permute(0, 2, 1, 3)
 
-        # 7. Compute & log MAE metrics
+        # 5. Compute & log MAE metrics
         mae_metrics = {
             "MAE Pd (MW)":   (pred_bus[..., 0],  target_bus[..., 0]),
             "MAE Qd (MVar)": (pred_bus[..., 1],  target_bus[..., 1]),
@@ -247,6 +261,59 @@ class ST_ForecastOPFTask(BaseTask):
                 add_dataloader_idx=False,
                 sync_dist=True,
             )
+
+        # 6. Vectorized OPF format construction [B*n*N_bus, 4]
+        from torch_scatter import scatter_add
+        _, gen_to_bus_index = target_batch.edge_index_dict[("gen", "connected_to", "bus")]
+        agg_gen_on_bus = scatter_add(
+            flat_pred["gen"],
+            gen_to_bus_index,
+            dim=0,
+            dim_size=B * n * N_bus,
+        )
+        
+        # Forecast order is [Pd, Qd, Qg, Vm, Va]
+        # OPF order is [Vm, Va, Pg, Qg]
+        bus_data_opf = torch.stack(
+            [
+                flat_pred["bus"][:, 3],  # Vm
+                flat_pred["bus"][:, 4],  # Va
+                agg_gen_on_bus.squeeze(), # Pg
+                flat_pred["bus"][:, 2],  # Qg
+            ],
+            dim=1,
+        )
+
+        # 7. Physics Execution
+        # Vm Violations
+        vm_pred = bus_data_opf[:, 0]
+        vm_violations = (vm_pred > vmax_denorm) | (vm_pred < vmin_denorm)
+        vm_violation_rate = vm_violations.float().mean() * 100.0
+
+        # Power Residuals
+        branch_flow_layer = ComputeBranchFlow()
+        node_injection_layer = ComputeNodeInjection()
+        node_residuals_layer = ComputeNodeResiduals()
+
+        bus_edge_index = target_batch.edge_index_dict[("bus", "connects", "bus")]
+        bus_edge_attr = target_batch.edge_attr_dict[("bus", "connects", "bus")]
+
+        Pft, Qft = branch_flow_layer(bus_data_opf, bus_edge_index, bus_edge_attr)
+        P_in, Q_in = node_injection_layer(Pft, Qft, bus_edge_index, B * n * N_bus)
+        residual_P, residual_Q = node_residuals_layer(
+            P_in,
+            Q_in,
+            bus_data_opf,
+            target_batch["bus"].x,
+        )
+
+        active_power_loss = torch.mean(torch.abs(residual_P))
+        reactive_power_loss = torch.mean(torch.abs(residual_Q))
+
+        # Log Physics metrics
+        self.log(f"{dataset_name}/Vm violation rate (%)", vm_violation_rate, batch_size=B, add_dataloader_idx=False, sync_dist=True)
+        self.log(f"{dataset_name}/Active Power Loss", active_power_loss, batch_size=B, add_dataloader_idx=False, sync_dist=True)
+        self.log(f"{dataset_name}/Reactive Power Loss", reactive_power_loss, batch_size=B, add_dataloader_idx=False, sync_dist=True)
 
         log_dict["Test loss"] = total_loss.detach()
         self.log_dict(
@@ -313,7 +380,22 @@ class ST_ForecastOPFTask(BaseTask):
             test_dir = os.path.join(artifact_dir, "test")
             os.makedirs(test_dir, exist_ok=True)
             forecast_csv_path = os.path.join(test_dir, f"{dataset}_forecast_MAE.csv")
+            metrics_csv_path = os.path.join(test_dir, f"{dataset}_metrics.csv")
             df_forecast.to_csv(forecast_csv_path, index=False)
+            
+            data_metrics = {
+                "Metric": [
+                    "Avg. active res. (MW)",
+                    "Avg. reactive res. (MVar)",
+                    "Vm violation rate (%)",
+                ],
+                "Value": [
+                    metrics.get("Active Power Loss", float("nan")),
+                    metrics.get("Reactive Power Loss", float("nan")),
+                    metrics.get("Vm violation rate (%)", float("nan")),
+                ],
+            }
+            pd.DataFrame(data_metrics).to_csv(metrics_csv_path, index=False)
 
         self.test_outputs.clear()
 
