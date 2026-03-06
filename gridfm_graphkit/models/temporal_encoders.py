@@ -108,6 +108,7 @@ class TCN(nn.Module):
         self,
         input_dim: int,
         window_size: int,
+        convs_per_block: int =2,
         kernel_size: int = 3,
         dropout: float = 0.0,
     ):
@@ -115,11 +116,11 @@ class TCN(nn.Module):
 
         self.input_dim = input_dim
         self.window_size = window_size
+        self.convs_per_block = convs_per_block
 
         # Dynamic depth calculation
-        # Note: this is conservative, and actually overparamterizes the depth, because the formula only assumes one conolution block per residual block. 
         num_layers = math.ceil(
-            math.log2((window_size - 1) / (kernel_size - 1) + 1)
+            math.log2((window_size - 1) / (self.convs_per_block * (kernel_size - 1)) + 1)
         )
         num_layers = max(1, num_layers)  # at least 1 layer
 
