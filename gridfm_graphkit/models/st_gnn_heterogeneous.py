@@ -16,6 +16,7 @@ import torch
 import torch.nn as nn
 from torch_geometric.nn import HeteroConv, TransformerConv
 
+from gridfm_graphkit.io.registries import MODELS_REGISTRY
 from gridfm_graphkit.models.utils import bound_with_sigmoid
 from gridfm_graphkit.models.temporal_encoders import TCN
 from gridfm_graphkit.datasets.globals import (
@@ -175,6 +176,7 @@ class UnmaskedSpatialEncoder(nn.Module):
 # 2. ST-GNN End-to-End Forecaster
 # ======================================================================
 
+@MODELS_REGISTRY.register("ST_GNN_heterogeneous")
 class ST_GNN_heterogeneous(nn.Module):
     """
     Space-then-Time heterogeneous GNN for MP-ACOPF forecasting.
@@ -199,13 +201,12 @@ class ST_GNN_heterogeneous(nn.Module):
     def __init__(
         self,
         args,
-        use_exogenous: bool = False,
         exo_bus_indices: list = None,
         exo_gen_dim: int = 0,
     ):
         super().__init__()
 
-        self.use_exogenous = use_exogenous
+        self.use_exogenous = getattr(args.model, "use_exogenous", False)
         self.exo_bus_indices = exo_bus_indices or DEFAULT_EXO_BUS_INDICES
         self.exo_gen_dim = exo_gen_dim
         self.n = args.data.forecast_horizon  # number of output steps
@@ -218,8 +219,8 @@ class ST_GNN_heterogeneous(nn.Module):
         heads = args.model.attention_head
         self.latent_dim = hidden_dim * heads
 
-        self.forecast_bus_dim = 5  # [Pd, Qd, Qg, Vm, Va]
-        self.forecast_gen_dim = 1  # [Pg]
+        self.forecast_bus_dim = args.model.output_bus_dim  # [Pd, Qd, Qg, Vm, Va]
+        self.forecast_gen_dim = args.model.output_gen_dim  # [Pg]
 
         # ---- Temporal encoders ----
         temporal_window = args.data.temporal_window
