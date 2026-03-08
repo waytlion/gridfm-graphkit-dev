@@ -5,7 +5,7 @@ data:
   mask_value: 0.0
   normalization: HeteroDataMVANormalizer
   networks:
-  - case14_ieee
+  - case118_ieee
   scenarios:
   - 26280  # 3yrs
   test_ratio: 0.15
