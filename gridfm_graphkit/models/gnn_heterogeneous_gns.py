@@ -299,12 +299,20 @@ class GNS_heterogeneous(nn.Module):
                     dim_size=num_bus,
                 )
                 
+                # For ForecastOPF, we must evaluate the physics against the predicted load (not ground truth)
+                if self.task == "ForecastOPF":
+                    bus_physics_input = x_dict["bus"].clone()
+                    bus_physics_input[:, PD_H] = bus_temp[:, 0]  # Predicted Pd
+                    bus_physics_input[:, QD_H] = bus_temp[:, 1]  # Predicted Qd
+                else:
+                    bus_physics_input = x_dict["bus"]
+                
                 # Physics decoder validates/derives values from power balance
                 physics_output = self.physics_decoder(
                     P_in,
                     Q_in,
                     bus_temp_reordered,  # Input: [Vm, Va] in expected format
-                    x_dict["bus"],
+                    bus_physics_input,
                     agg_bus,
                     mask_dict,
                 )
@@ -323,7 +331,7 @@ class GNS_heterogeneous(nn.Module):
                     P_in,
                     Q_in,
                     physics_output,
-                    x_dict["bus"],
+                    bus_physics_input,
                 )
 
                 bus_residuals = torch.stack([residual_P, residual_Q], dim=-1)
