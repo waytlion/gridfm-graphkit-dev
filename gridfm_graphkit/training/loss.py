@@ -408,21 +408,26 @@ class ST_PhysicsForecastLoss(BaseLoss):
     """
     Physics-informed loss for ST-GNN forecast output.
 
-    Flattens the multi-step predictions to [B*n*N_bus, 2] and runs
-    them through the existing physics layers (ComputeBranchFlow,
-    ComputeNodeInjection, ComputeNodeResiduals) to compute power
-    balance residuals (delta_P, delta_Q).
+    - Flattens the multi-step temporal predictions to match static graph topologies.
+    - Injects the predicted load (Pd, Qd) into the physical bus features to evaluate a perfectly self-consistent physical state.
+    - Runs predictions through the physics layers (ComputeBranchFlow, 
+      ComputeNodeInjection, ComputeNodeResiduals).
+    -> Computes the active and reactive power balance residuals (delta_P, delta_Q).
 
-    Expected inputs:
-        pred["bus"]:   [B, N_bus, n, 5]   forecast [Pd, Qd, Qg, Vm, Va]
-        pred["gen"]:   [B, N_gen, n, 1]   forecast [Pg]
-        edge_index:    dict from target_batch.edge_index_dict
-        edge_attr:     dict from target_batch.edge_attr_dict
-        mask:          dict containing:
-            "bus_x":   [B*n*N_bus, F_bus]  original target bus features (for Pd, Qd, GS, BS)
-            "B":       int, batch size
-            "n":       int, forecast horizon
-            "N_bus":   int, buses per graph
+    Args:
+        pred (dict):
+            - "bus": [B, N_bus, n, 5] forecast [Pd, Qd, Qg, Vm, Va]
+            - "gen": [B, N_gen, n, 1] forecast [Pg]
+        edge_index (dict): from target_batch.edge_index_dict
+        edge_attr (dict):  from target_batch.edge_attr_dict
+        mask (dict): containing:
+            - "bus_x": [B*n*N_bus, F_bus] original target bus features (provides static GS, BS)
+            - "B":     int, batch size
+            - "n":     int, forecast horizon
+            - "N_bus": int, buses per graph
+
+    Returns: 
+        dict: mean squared power balance residuals.
     """
 
     def __init__(self, loss_args, args):
@@ -446,22 +451,35 @@ class ST_PhysicsForecastLoss(BaseLoss):
         pred_bus_flat = pred["bus"].permute(0, 2, 1, 3).reshape(-1, 5) # [B, N_bus, n, 5]  -> [B*n*N_bus, 5]
         pred_gen_flat = pred["gen"].permute(0, 2, 1, 3).reshape(-1, 1) # [B, N_gen, n, 1] -> [B*n*N_gen, 1]
 
-        Vm = pred_bus_flat[:, 3]   # Vm (idx 3), [B*n*N_bus]
-        Va = pred_bus_flat[:, 4]   # Va (idx 4), [B*n*N_bus]
-        Qg = pred_bus_flat[:, 2]   # Qg (idx 2), [B*n*N_bus]
+        # Var. Extraction
+        Pd_pred = pred_bus_flat[:, 0] 
+        Qd_pred = pred_bus_flat[:, 1]   
+        Vm_pred = pred_bus_flat[:, 3]   
+        Va_pred = pred_bus_flat[:, 4]   
+        Qg_pred = pred_bus_flat[:, 2]
 
-        # Scatter Pg from generators to buses
+        # add Pg from generators to buses
         edge_index_gb = edge_index[("gen", "connected_to", "bus")]
         num_bus_total = B * n * N_bus
-        Pg_bus = scatter_add(
+        Pg_bus_pred = scatter_add(
             pred_gen_flat[:, 0],
             edge_index_gb[1],
             dim=0,
             dim_size=num_bus_total,
         )
 
-        # Construct bus_data_pred: [B*n*N_bus, 4] matching [VM_OUT, VA_OUT, PG_OUT, QG_OUT]
-        bus_data_pred = torch.stack([Vm, Va, Pg_bus, Qg], dim=-1)
+        # Create Bus pred tensor in correct format:  [B*n*N_bus, 4] matching [VM_OUT, VA_OUT, PG_OUT, QG_OUT]
+        bus_data_pred = torch.stack([Vm_pred, Va_pred, Pg_bus_pred, Qg_pred], dim=-1) 
+        
+        # ---------------------------------------------------------
+        # Create  Self-Consistent Predicted Universe
+        # ---------------------------------------------------------
+        # Clone to avoid modifying the original target tensor in-place
+        bus_x_physics = bus_x_orig.clone() 
+        
+        # Overwrite  ground truth load with PREDICTED load
+        bus_x_physics[:, PD_H] = Pd_pred
+        bus_x_physics[:, QD_H] = Qd_pred
 
         # --- Physics pipeline ---
         edge_index_bb = edge_index[("bus", "connects", "bus")]
@@ -469,7 +487,7 @@ class ST_PhysicsForecastLoss(BaseLoss):
 
         Pft, Qft = self.branch_flow_layer(bus_data_pred, edge_index_bb, edge_attr_bb)
         P_in, Q_in = self.node_injection_layer(Pft, Qft, edge_index_bb, num_bus_total)
-        res_P, res_Q = self.node_residuals_layer(P_in, Q_in, bus_data_pred, bus_x_orig)
+        res_P, res_Q = self.node_residuals_layer(P_in, Q_in, bus_data_pred, bus_x_physics)
 
         # Scalar loss = mean squared residuals
         loss = torch.mean(res_P ** 2 + res_Q ** 2)
