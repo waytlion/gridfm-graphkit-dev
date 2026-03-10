@@ -83,6 +83,7 @@ class HeteroGridDatasetDisk(Dataset):
     ):
         self.data_normalizer = data_normalizer
         self.length = None
+        self._data_list = None  # populated by preload() after normalizer is fitted
 
         super().__init__(root, transform, pre_transform, pre_filter)
 
@@ -231,6 +232,8 @@ class HeteroGridDatasetDisk(Dataset):
             f.write("done")
 
     def len(self):
+        if self._data_list is not None:
+            return len(self._data_list)
         if self.length is None:
             files = [
                 f
@@ -243,8 +246,45 @@ class HeteroGridDatasetDisk(Dataset):
             self.length = len(files)
         return self.length
 
+    def preload(self) -> None:
+        """Pre-load all processed graphs into RAM.
+
+        Must be called after the normalizer has been fitted and before
+        DataLoader workers are spawned.  On Linux/HPC, worker processes
+        inherit the populated list via fork copy-on-write — no RAM
+        duplication across the 32 workers.
+        """
+        n = self.len()
+        self._data_list = []
+        for idx in tqdm(range(n), desc=f"Pre-loading {self.__class__.__name__} into RAM"):
+            file_name = osp.join(self.processed_dir, f"data_index_{idx}.pt")
+            data_dict = torch.load(file_name, weights_only=True)
+            data = HeteroData.from_dict(data_dict)
+            self.data_normalizer.transform(data=data)
+            self._data_list.append(data)
+
+        print("Dataset initialized. This should only print ONCE.")
+        total_bytes = sum(
+            v.nbytes
+            for data in self._data_list
+            for store in data.node_stores + data.edge_stores
+            for v in store.values()
+            if isinstance(v, torch.Tensor)
+        )
+        print(f"  RAM estimate: {total_bytes / 1e9:.2f} GB ({len(self._data_list)} graphs)")
+
     def get(self, idx) -> HeteroData:
-        """ Returns heterogeneous graph with bus/gen/branch edges"""
+        """Returns heterogeneous graph with bus/gen/branch edges."""
+        #HPC path -> load all data to system-RAM once
+        if self._data_list is not None:
+            return self._data_list[idx]
+        
+        # Slow-Path-Fallback: hidden attribute ensures to only print the warning ONCE
+        if not getattr(self, '_warned_disk_fallback', False):
+            print("WARNING: dataset.preload() was not called! "
+                  "DataLoader is falling back to slow disk I/O. "
+                  "Expect massive performance degradation.")
+            self._warned_disk_fallback = True
         file_name = osp.join(
             self.processed_dir,
             f"data_index_{idx}.pt",

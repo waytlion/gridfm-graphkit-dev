@@ -21,6 +21,7 @@ import os.path as osp
 from typing import List, Tuple, Optional, Callable
 
 import torch
+from tqdm import tqdm
 from torch_geometric.data import HeteroData, Batch
 
 from gridfm_graphkit.datasets.powergrid_hetero_dataset import HeteroGridDatasetDisk
@@ -110,14 +111,14 @@ class HeteroGridTemporalDatasetDisk(HeteroGridDatasetDisk):
         # --- Build window [actual_idx, ..., actual_idx + W - 1] ---
         window_graphs: List[HeteroData] = []
         for t in range(self.window_size):
-            graph = self._load_single_graph(actual_idx + t)
+            graph = self.get(actual_idx + t)
             window_graphs.append(graph)
 
         # --- Targets [actual_idx + W, ..., actual_idx + W + n - 1] ---
         target_graphs: List[HeteroData] = []
         for h in range(self.forecast_horizon):
             target_idx = actual_idx + self.window_size + h
-            target_graphs.append(self._load_single_graph(target_idx))
+            target_graphs.append(self.get(target_idx))
 
         return window_graphs, target_graphs
 
@@ -125,12 +126,53 @@ class HeteroGridTemporalDatasetDisk(HeteroGridDatasetDisk):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _load_single_graph(self, scenario_idx: int) -> HeteroData:
-        """Load, normalize, and transform a single scenario graph from disk.
+    def preload(self) -> None:
+        """Pre-load all individual scenario graphs into RAM.
 
-        Same logic as HeteroGridDatasetDisk.get() but called explicitly
-        because __getitem__ is overridden to return multiple graphs.
+        Loads all _total_scenarios scenario files, normalizes, and applies
+        transforms. __getitem__ assembles windows entirely from the
+        in-memory list — zero disk I/O during training.
+        Must be called after the normalizer has been fitted.
         """
+        self._data_list = []
+        for scenario_idx in tqdm(
+            range(self._total_scenarios),
+            desc=f"Pre-loading {self.__class__.__name__} into RAM",
+        ):
+            file_name = osp.join(self.processed_dir, f"data_index_{scenario_idx}.pt")
+            data_dict = torch.load(file_name, weights_only=True)
+            data = HeteroData.from_dict(data_dict)
+            self.data_normalizer.transform(data=data)
+            if self.transform is not None:
+                data = self.transform(data)
+            self._data_list.append(data)
+
+        print("Dataset initialized. This should only print ONCE.")
+        total_bytes = sum(
+            v.nbytes
+            for data in self._data_list
+            for store in data.node_stores + data.edge_stores
+            for v in store.values()
+            if isinstance(v, torch.Tensor)
+        )
+        print(f"  RAM estimate: {total_bytes / 1e9:.2f} GB ({len(self._data_list)} individual scenarios)")
+
+    def get(self, scenario_idx: int) -> HeteroData:
+        """Override parent's get() to apply self.transform in the disk-fallback path.
+
+        The temporal __getitem__ calls self.get() directly, bypassing PyG's
+        Dataset.__getitem__ wrapper — so transform must be applied here explicitly
+        rather than relying on PyG to do it after the call.
+        """
+        #HPC path -> load all data to system-RAM once
+        if self._data_list is not None:
+            return self._data_list[scenario_idx]
+        # Slow-Path-Fallback: hidden attribute ensures to only print the warning ONCE
+        if not getattr(self, '_warned_disk_fallback', False):
+            print("WARNING: dataset.preload() was not called! "
+                  "DataLoader is falling back to slow disk I/O. "
+                  "Expect massive performance degradation.")
+            self._warned_disk_fallback = True
         file_name = osp.join(
             self.processed_dir, f"data_index_{scenario_idx}.pt",
         )
@@ -145,11 +187,8 @@ class HeteroGridTemporalDatasetDisk(HeteroGridDatasetDisk):
 
         # Per-sample normalization (same as parent's get())
         self.data_normalizer.transform(data=data)
-
-        # Runtime transforms (e.g. AddOPFForecastingMask)
         if self.transform is not None:
             data = self.transform(data)
-
         return data
 
     # ------------------------------------------------------------------
