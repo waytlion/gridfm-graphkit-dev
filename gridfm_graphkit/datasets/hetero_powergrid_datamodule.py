@@ -248,6 +248,11 @@ class LitGridHeteroDataModule(L.LightningDataModule):
                     num_scenarios, saved_stats,
                 )
 
+            # Normalizer is now fitted — pre-load all graphs into RAM so that
+            # DataLoader workers share memory via fork copy-on-write instead
+            # of each rebuilding their own cache from disk.
+            self.datasets[i].preload()
+
             self.train_datasets.append(train_dataset)
             self.val_datasets.append(val_dataset)
             self.test_datasets.append(test_dataset)
