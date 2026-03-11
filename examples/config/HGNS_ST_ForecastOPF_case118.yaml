@@ -10,12 +10,13 @@ data:
   - 26280  # 3yrs
   test_ratio: 0.15
   val_ratio: 0.15
-  workers: 32
+  workers: 16
+  preload: True # preload all graphs into RAM before spawning DataLoader workers (requires sufficient RAM)
   split_by_load_scenario_idx: true
   temporal_split: true
   # ST-GNN temporal parameters
   temporal_window: 48       # W: lookback window (168 hourly snapshots = 1 week)
-  forecast_horizon: 1       # n: number of target steps ahead
+  forecast_horizon: 6       # n: number of target steps ahead
 model:
   type: ST_GNN_heterogeneous
   # Spatial encoder (mirrors GNS_heterogeneous architecture)
@@ -39,8 +40,8 @@ optimizer:
   lr_decay: 0.7
   lr_patience: 5
 training:
-  batch_size: 48            # reduced from 64 due to B*W folding
-  epochs: 150
+  batch_size: 64            
+  epochs: 200
   losses:
     - ST_ForecastBusMSE
     - ST_ForecastGenMSE
@@ -60,5 +61,5 @@ training:
 seed: 0
 verbose: true
 callbacks:
-  patience: 20
+  patience: 100
   tol: 0
