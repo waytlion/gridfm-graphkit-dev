@@ -167,12 +167,6 @@ class HeteroGridTemporalDatasetDisk(HeteroGridDatasetDisk):
         #HPC path -> load all data to system-RAM once
         if self._data_list is not None:
             return self._data_list[scenario_idx]
-        # Slow-Path-Fallback: hidden attribute ensures to only print the warning ONCE
-        if not getattr(self, '_warned_disk_fallback', False):
-            print("WARNING: dataset.preload() was not called! "
-                  "DataLoader is falling back to slow disk I/O. "
-                  "Expect massive performance degradation.")
-            self._warned_disk_fallback = True
         file_name = osp.join(
             self.processed_dir, f"data_index_{scenario_idx}.pt",
         )
