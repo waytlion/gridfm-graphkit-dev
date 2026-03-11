@@ -253,6 +253,11 @@ class LitGridHeteroDataModule(L.LightningDataModule):
             # of each rebuilding their own cache from disk.
             if getattr(self.args.data, "preload", True):
                 self.datasets[i].preload()
+            else:
+                print(
+                    f"WARNING: preload=false for '{network}' — DataLoader workers will "
+                    "fall back to per-sample disk I/O. Set data.preload: true for HPC runs."
+                )
 
             self.train_datasets.append(train_dataset)
             self.val_datasets.append(val_dataset)
