@@ -86,6 +86,7 @@ def main_cli(args):
         max_epochs=config_args.training.epochs,
         callbacks=get_training_callbacks(config_args),
         enable_progress_bar=False, 
+        precision="bf16-mixed",
     )
     if args.command == "train" or args.command == "finetune":
         trainer.fit(model=model, datamodule=litGrid)
