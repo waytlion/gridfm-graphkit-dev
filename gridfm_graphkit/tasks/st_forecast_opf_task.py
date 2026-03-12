@@ -397,32 +397,31 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
 
             # ── Build per-timestep CSV ──────────────────────────────────
             # Layout: rows = timestep (1..n), then a "GLOBAL" summary row
-            # Columns are a MultiIndex: (Variable, Metric)
+            # Columns: single-level flattened format "Variable - Metric"
             rows_per_t = []
             for t in range(n_horizon):
                 row = {}
                 for vi, vname in enumerate(VAR_NAMES):
                     vm = var_metrics[vi]
-                    row[(vname, "RMSE")] = vm["rmse_t"][t].item()
-                    row[(vname, "MAE")] = vm["mae_t"][t].item()
-                    row[(vname, "wMAPE")] = vm["wmape_t"][t].item()
-                    row[(vname, "MASE")] = vm["mase_t"][t].item()
-                    row[(vname, "MSSE")] = vm["msse_t"][t].item()
+                    row[f"{vname} - RMSE"] = vm["rmse_t"][t].item()
+                    row[f"{vname} - MAE"] = vm["mae_t"][t].item()
+                    row[f"{vname} - wMAPE"] = vm["wmape_t"][t].item()
+                    row[f"{vname} - MASE"] = vm["mase_t"][t].item()
+                    row[f"{vname} - MSSE"] = vm["msse_t"][t].item()
                 rows_per_t.append(row)
 
             # Global summary row
             global_row = {}
             for vi, vname in enumerate(VAR_NAMES):
                 vm = var_metrics[vi]
-                global_row[(vname, "RMSE")] = vm["rmse"]
-                global_row[(vname, "MAE")] = vm["mae"]
-                global_row[(vname, "wMAPE")] = vm["wmape"]
-                global_row[(vname, "MASE")] = vm["mase"]
-                global_row[(vname, "MSSE")] = vm["msse"]
+                global_row[f"{vname} - RMSE"] = vm["rmse"]
+                global_row[f"{vname} - MAE"] = vm["mae"]
+                global_row[f"{vname} - wMAPE"] = vm["wmape"]
+                global_row[f"{vname} - MASE"] = vm["mase"]
+                global_row[f"{vname} - MSSE"] = vm["msse"]
 
-            columns = pd.MultiIndex.from_product([VAR_NAMES, METRIC_NAMES])
             index_labels = [f"t+{t+1}" for t in range(n_horizon)] + ["GLOBAL"]
-            df = pd.DataFrame(rows_per_t + [global_row], columns=columns, index=index_labels)
+            df = pd.DataFrame(rows_per_t + [global_row], index=index_labels)
             df.index.name = "Horizon"
 
             forecast_csv_path = os.path.join(test_dir, f"{dataset_name}_forecast.csv")
