@@ -11,6 +11,7 @@ import os
 from gridfm_graphkit.io.param_handler import get_task
 
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
+from lightning.pytorch.callbacks import Timer
 from lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint
 from lightning.pytorch.loggers import MLFlowLogger
 import lightning as L
@@ -37,8 +38,8 @@ def get_training_callbacks(args):
         save_last=True,
         save_top_k=0,
     )
-
-    return [early_stop_callback, save_best_model_callback, checkpoint_callback]
+    timer=Timer()
+    return [early_stop_callback, save_best_model_callback, checkpoint_callback, timer]
 
 
 def main_cli(args):
@@ -84,6 +85,7 @@ def main_cli(args):
         default_root_dir=args.log_dir,
         max_epochs=config_args.training.epochs,
         callbacks=get_training_callbacks(config_args),
+        enable_progress_bar=False, 
     )
     if args.command == "train" or args.command == "finetune":
         trainer.fit(model=model, datamodule=litGrid)
@@ -96,6 +98,7 @@ def main_cli(args):
             num_nodes=1,
             log_every_n_steps=1,
             default_root_dir=args.log_dir,
+            enable_progress_bar=False,
         )
         test_trainer.test(model=model, datamodule=litGrid)
 
@@ -124,6 +127,8 @@ def main_cli(args):
             num_nodes=1,
             log_every_n_steps=1,
             default_root_dir=args.log_dir,
+            enable_progress_bar=False,
+
         )
         predictions = predict_trainer.predict(model=model, datamodule=litGrid)
 

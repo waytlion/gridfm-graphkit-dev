@@ -320,7 +320,7 @@ class GNS_heterogeneous(nn.Module):
                 # Handle output based on task type
                 if self.task == "ForecastOPF":
                     # Keep model predictions for all 5 features (don't override with physics)
-                    #TODO: clarify if maybe smart to overwrite Qg with the physics value calc by physics-decoder  
+                    #!TODO: clarify if maybe smart to overwrite Qg with the physics value calc by physics-decoder  
                     output_temp = bus_temp.clone()
                 else:
                     # Use physics decoder output (overrides predictions with physics-derived values)

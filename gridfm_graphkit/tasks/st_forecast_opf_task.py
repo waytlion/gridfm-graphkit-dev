@@ -36,7 +36,10 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
 
     def __init__(self, args, data_normalizers):
         super().__init__(args, data_normalizers)
-        self.horizon_metrics = {i: [] for i in range(len(args.data.networks))}
+        # Collect raw tensors per batch for proper global metric computation
+        self.forecast_preds = {i: [] for i in range(len(args.data.networks))}
+        self.forecast_targets = {i: [] for i in range(len(args.data.networks))}
+        self.forecast_naive = {i: [] for i in range(len(args.data.networks))}
 
     # ------------------------------------------------------------------
     # Forward
@@ -158,8 +161,10 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         total_loss, log_dict, pred = self._shared_step(batch, prefix="test")
         dataset_name = self.args.data.networks[dataloader_idx]
 
+        folded_batch = batch["folded_batch"]
         target_batch = batch["target_batch"]
         B = batch["B"]
+        W = batch["W"]
         n = batch["n"]
         N_bus = batch["N_bus"]
         N_gen = target_batch["gen"].x.size(0) // (B * n)
@@ -169,9 +174,12 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         pred_gen_flat = pred["gen"].permute(0, 2, 1, 3).reshape(B * n * N_gen, 1)
         flat_pred = {"bus": pred_bus_flat, "gen": pred_gen_flat}
 
-        # 3. Denormalize
+        # 3. Denormalize predictions and targets
         self.data_normalizers[dataloader_idx].inverse_transform(target_batch)
         self.data_normalizers[dataloader_idx].inverse_output(flat_pred, target_batch)
+
+        # 3b. Denormalize the lookback window (needed for naive baseline)
+        self.data_normalizers[dataloader_idx].inverse_transform(folded_batch)
 
         # 4. Reconstruct 4D targets from denormalized target_batch [B, N_bus, n, F]
         target_bus_4d = target_batch["bus"].x.view(B, n, N_bus, -1).permute(0, 2, 1, 3)
@@ -179,37 +187,35 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         target_gen_4d = target_batch["gen"].x.view(B, n, N_gen, -1).permute(0, 2, 1, 3)
         target_gen = target_gen_4d[..., GEN_TARGET_INDICES]  # [B, N_gen, n, 1]
 
-        # Reshape flat_pred back to [B, N_bus, n, F] for MAE
+        # Reshape flat_pred back to [B, N_bus, n, F] for metrics
         pred_bus = flat_pred["bus"].view(B, n, N_bus, 5).permute(0, 2, 1, 3)  # [B, N_bus, n, 5]
         pred_gen = flat_pred["gen"].view(B, n, N_gen, 1).permute(0, 2, 1, 3)  # [B, N_gen, n, 1]
 
-        # 5. Scalar MAE metrics (mean over all dims)
-        mae_metrics = {
-            "MAE Pd (MW)":   (pred_bus[..., 0], target_bus[..., 0]),
-            "MAE Qd (MVar)": (pred_bus[..., 1], target_bus[..., 1]),
-            "MAE Qg (MVar)": (pred_bus[..., 2], target_bus[..., 2]),
-            "MAE Vm (p.u.)": (pred_bus[..., 3], target_bus[..., 3]),
-            "MAE Va (rad)":  (pred_bus[..., 4], target_bus[..., 4]),
-            "MAE Pg (MW)":   (pred_gen[..., 0], target_gen[..., 0]),
-        }
-        for name, (p, tgt) in mae_metrics.items():
-            self.log(
-                f"{dataset_name}/{name}",
-                torch.mean(torch.abs(p - tgt)),
-                batch_size=B,
-                add_dataloader_idx=False,
-                sync_dist=True,
-            )
+        # 5. Build naive baseline: value from 48 hours ago repeated for all n horizons
+        #    folded_batch is B*W graphs ordered sample-major, time-minor.
+        #    Using 48-hour lag as naive baseline (assumes hourly data and W >= 48)
+        window_bus_4d = folded_batch["bus"].x.view(B, W, N_bus, -1)  # [B, W, N_bus, F_full]
+        lag_48_bus = window_bus_4d[:, -48, :, :]  # [B, N_bus, F_full] — 48 hours ago
+        naive_bus = lag_48_bus[:, :, BUS_TARGET_INDICES].unsqueeze(2).expand_as(pred_bus)  # [B, N_bus, n, 5]
 
-        # 6. Horizon-wise MAE: mean over (B, N_bus) dims -> [n, F]
-        # pred_bus shape: [B, N_bus, n, 5]  dims: 0=B, 1=N_bus, 2=n, 3=F
-        abs_err_bus = torch.abs(pred_bus - target_bus)   # [B, N_bus, n, 5]
-        abs_err_gen = torch.abs(pred_gen - target_gen)   # [B, N_gen, n, 1]
-        horizon_mae_bus = abs_err_bus.mean(dim=(0, 1))   # [n, 5]
-        horizon_mae_gen = abs_err_gen.mean(dim=(0, 1))   # [n, 1]
-        # Store as [n, 6] tensor with columns [Pd, Qd, Qg, Vm, Va, Pg]
-        horizon_mae = torch.cat([horizon_mae_bus, horizon_mae_gen], dim=-1)  # [n, 6]
-        self.horizon_metrics[dataloader_idx].append(horizon_mae.detach().cpu())
+        N_gen_window = folded_batch["gen"].x.size(0) // (B * W)
+        window_gen_4d = folded_batch["gen"].x.view(B, W, N_gen_window, -1)
+        lag_48_gen = window_gen_4d[:, -48, :, :]  # [B, N_gen, F_gen_full] — 48 hours ago
+        naive_gen = lag_48_gen[:, :, GEN_TARGET_INDICES].unsqueeze(2).expand_as(pred_gen)  # [B, N_gen, n, 1]
+
+        # 6. Store raw tensors (detached, on CPU) for global metrics in on_test_end
+        self.forecast_preds[dataloader_idx].append({
+            "bus": pred_bus.detach().cpu(),   # [B, N_bus, n, 5]
+            "gen": pred_gen.detach().cpu(),   # [B, N_gen, n, 1]
+        })
+        self.forecast_targets[dataloader_idx].append({
+            "bus": target_bus.detach().cpu(),
+            "gen": target_gen.detach().cpu(),
+        })
+        self.forecast_naive[dataloader_idx].append({
+            "bus": naive_bus.detach().cpu(),
+            "gen": naive_gen.detach().cpu(),
+        })
 
         # 7. Build OPF-format tensors [B*n*N_bus, 4] for _compute_opf_metrics
         _, gen_to_bus_index = target_batch.edge_index_dict[("gen", "connected_to", "bus")]
@@ -273,6 +279,66 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
         return self(batch)
 
+    # ------------------------------------------------------------------
+    # Forecast metric helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _compute_forecast_metrics(pred, target, naive):
+        """
+        Compute per-timestep and global forecast metrics for a single variable.
+
+        All inputs are [total_samples, N_nodes, n] (spatial dim already present).
+
+        Returns dict of 1-D tensors (length n) for per-step metrics
+        and scalars for global metrics.
+
+        Metrics
+        -------
+        RMSE  : sqrt(mean( (pred - target)^2 ))               per timestep
+        MAE   : mean( |pred - target| )                       per timestep
+        wMAPE : sum(|pred - target|) / (sum(|target|) + eps)   per timestep
+                (weighted MAPE avoids per-element div-by-zero)
+        MASE  : MAE_model / (MAE_naive + eps)                  per timestep
+        MSSE  : MSE_model / (MSE_naive + eps)                  per timestep
+
+        Naive baseline: 48-hour lag (value from 48 hours ago repeated for all horizons)
+        """
+        eps = 1e-8
+
+        err = pred - target                     # [S, N, n]
+        abs_err = torch.abs(err)                # [S, N, n]
+        sq_err = err ** 2                       # [S, N, n]
+
+        naive_err = naive - target
+        naive_abs_err = torch.abs(naive_err)
+        naive_sq_err = naive_err ** 2
+
+        # --- per-timestep (mean over samples & nodes, keep n) ---
+        mae_t = abs_err.mean(dim=(0, 1))                          # [n]
+        rmse_t = sq_err.mean(dim=(0, 1)).sqrt()                   # [n]
+        wmape_t = abs_err.sum(dim=(0, 1)) / (torch.abs(target).sum(dim=(0, 1)) + eps)  # [n]
+        naive_mae_t = naive_abs_err.mean(dim=(0, 1))              # [n]
+        naive_mse_t = naive_sq_err.mean(dim=(0, 1))               # [n]
+        mase_t = mae_t / (naive_mae_t + eps)                      # [n]
+        msse_t = sq_err.mean(dim=(0, 1)) / (naive_mse_t + eps)    # [n]
+
+        # --- global (mean over everything) ---
+        mae_g = abs_err.mean()
+        rmse_g = sq_err.mean().sqrt()
+        wmape_g = abs_err.sum() / (torch.abs(target).sum() + eps)
+        naive_mae_g = naive_abs_err.mean()
+        naive_mse_g = naive_sq_err.mean()
+        mase_g = mae_g / (naive_mae_g + eps)
+        msse_g = sq_err.mean() / (naive_mse_g + eps)
+
+        return {
+            "rmse_t": rmse_t, "mae_t": mae_t, "wmape_t": wmape_t,
+            "mase_t": mase_t, "msse_t": msse_t,
+            "rmse": rmse_g.item(), "mae": mae_g.item(), "wmape": wmape_g.item(),
+            "mase": mase_g.item(), "msse": msse_g.item(),
+        }
+
     @rank_zero_only
     def on_test_end(self):
         import os
@@ -293,25 +359,80 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         test_dir = os.path.join(artifact_dir, "test")
         os.makedirs(test_dir, exist_ok=True)
 
-        # Write horizon-wise MAE CSV per dataset
-        # Columns: [Pd, Qd, Qg, Vm, Va, Pg], index: timestep t (1..n)
-        for dataset_idx, batch_maes in self.horizon_metrics.items():
-            if not batch_maes:
+        VAR_NAMES = ["Pd (MW)", "Qd (MVar)", "Qg (MVar)", "Vm (p.u.)", "Va (rad)", "Pg (MW)"]
+        METRIC_NAMES = ["RMSE", "MAE", "wMAPE", "MASE", "MSSE"]
+
+        for dataset_idx in range(len(self.args.data.networks)):
+            if not self.forecast_preds[dataset_idx]:
                 continue
             dataset_name = self.args.data.networks[dataset_idx]
-            # Average across all test batches: each entry is [n, 6]
-            horizon_mae = torch.stack(batch_maes, dim=0).mean(dim=0)  # [n, 6]
-            df_horizon = pd.DataFrame(
-                horizon_mae.numpy(),
-                columns=["Pd (MW)", "Qd (MVar)", "Qg (MVar)", "Vm (p.u.)", "Va (rad)", "Pg (MW)"],
-                index=pd.RangeIndex(start=1, stop=horizon_mae.size(0) + 1, name="t"),
+
+            # Concatenate all batches along sample dim (dim 0)
+            all_pred_bus = torch.cat([d["bus"] for d in self.forecast_preds[dataset_idx]], dim=0)    # [S, N_bus, n, 5]
+            all_pred_gen = torch.cat([d["gen"] for d in self.forecast_preds[dataset_idx]], dim=0)    # [S, N_gen, n, 1]
+            all_tgt_bus = torch.cat([d["bus"] for d in self.forecast_targets[dataset_idx]], dim=0)
+            all_tgt_gen = torch.cat([d["gen"] for d in self.forecast_targets[dataset_idx]], dim=0)
+            all_naive_bus = torch.cat([d["bus"] for d in self.forecast_naive[dataset_idx]], dim=0)
+            all_naive_gen = torch.cat([d["gen"] for d in self.forecast_naive[dataset_idx]], dim=0)
+
+            # Compute metrics per variable.  Shapes are [S, N, n] after indexing the feature dim.
+            var_metrics = []
+            for feat_idx in range(5):  # bus features: Pd, Qd, Qg, Vm, Va
+                m = self._compute_forecast_metrics(
+                    all_pred_bus[..., feat_idx],
+                    all_tgt_bus[..., feat_idx],
+                    all_naive_bus[..., feat_idx],
+                )
+                var_metrics.append(m)
+            # Pg (generator)
+            m_pg = self._compute_forecast_metrics(
+                all_pred_gen[..., 0],
+                all_tgt_gen[..., 0],
+                all_naive_gen[..., 0],
             )
-            horizon_csv_path = os.path.join(test_dir, f"{dataset_name}_horizon_MAE.csv")
-            df_horizon.to_csv(horizon_csv_path)
+            var_metrics.append(m_pg)
 
-        self.horizon_metrics.clear()
+            n_horizon = all_pred_bus.size(2)
 
-        # Delegate forecast_MAE CSV + RMSE.csv + metrics.csv to parent chain
+            # ── Build per-timestep CSV ──────────────────────────────────
+            # Layout: rows = timestep (1..n), then a "GLOBAL" summary row
+            # Columns are a MultiIndex: (Variable, Metric)
+            rows_per_t = []
+            for t in range(n_horizon):
+                row = {}
+                for vi, vname in enumerate(VAR_NAMES):
+                    vm = var_metrics[vi]
+                    row[(vname, "RMSE")] = vm["rmse_t"][t].item()
+                    row[(vname, "MAE")] = vm["mae_t"][t].item()
+                    row[(vname, "wMAPE")] = vm["wmape_t"][t].item()
+                    row[(vname, "MASE")] = vm["mase_t"][t].item()
+                    row[(vname, "MSSE")] = vm["msse_t"][t].item()
+                rows_per_t.append(row)
+
+            # Global summary row
+            global_row = {}
+            for vi, vname in enumerate(VAR_NAMES):
+                vm = var_metrics[vi]
+                global_row[(vname, "RMSE")] = vm["rmse"]
+                global_row[(vname, "MAE")] = vm["mae"]
+                global_row[(vname, "wMAPE")] = vm["wmape"]
+                global_row[(vname, "MASE")] = vm["mase"]
+                global_row[(vname, "MSSE")] = vm["msse"]
+
+            columns = pd.MultiIndex.from_product([VAR_NAMES, METRIC_NAMES])
+            index_labels = [f"t+{t+1}" for t in range(n_horizon)] + ["GLOBAL"]
+            df = pd.DataFrame(rows_per_t + [global_row], columns=columns, index=index_labels)
+            df.index.name = "Horizon"
+
+            forecast_csv_path = os.path.join(test_dir, f"{dataset_name}_forecast.csv")
+            df.to_csv(forecast_csv_path)
+
+        # Cleanup
+        self.forecast_preds = {i: [] for i in range(len(self.args.data.networks))}
+        self.forecast_targets = {i: [] for i in range(len(self.args.data.networks))}
+        self.forecast_naive = {i: [] for i in range(len(self.args.data.networks))}
+
+        # Delegate RMSE.csv + metrics.csv (OPF physics metrics) to parent
         super().on_test_end()
 
 
