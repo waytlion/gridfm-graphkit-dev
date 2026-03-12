@@ -191,17 +191,18 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         pred_bus = flat_pred["bus"].view(B, n, N_bus, 5).permute(0, 2, 1, 3)  # [B, N_bus, n, 5]
         pred_gen = flat_pred["gen"].view(B, n, N_gen, 1).permute(0, 2, 1, 3)  # [B, N_gen, n, 1]
 
-        # 5. Build naive baseline: value from 48 hours ago repeated for all n horizons
+        # 5. Build naive baseline: value from 48 hours ago (or earliest available) repeated for all n horizons
         #    folded_batch is B*W graphs ordered sample-major, time-minor.
-        #    Using 48-hour lag as naive baseline (assumes hourly data and W >= 48)
+        #    Using 48-hour lag as naive baseline when W >= 48, otherwise use earliest window timestep
         window_bus_4d = folded_batch["bus"].x.view(B, W, N_bus, -1)  # [B, W, N_bus, F_full]
-        lag_48_bus = window_bus_4d[:, -48, :, :]  # [B, N_bus, F_full] — 48 hours ago
-        naive_bus = lag_48_bus[:, :, BUS_TARGET_INDICES].unsqueeze(2).expand_as(pred_bus)  # [B, N_bus, n, 5]
+        lag_idx = min(48, W)  # Use 48 hours ago if available, else earliest timestep
+        lag_bus = window_bus_4d[:, -lag_idx, :, :]  # [B, N_bus, F_full]
+        naive_bus = lag_bus[:, :, BUS_TARGET_INDICES].unsqueeze(2).expand_as(pred_bus)  # [B, N_bus, n, 5]
 
         N_gen_window = folded_batch["gen"].x.size(0) // (B * W)
         window_gen_4d = folded_batch["gen"].x.view(B, W, N_gen_window, -1)
-        lag_48_gen = window_gen_4d[:, -48, :, :]  # [B, N_gen, F_gen_full] — 48 hours ago
-        naive_gen = lag_48_gen[:, :, GEN_TARGET_INDICES].unsqueeze(2).expand_as(pred_gen)  # [B, N_gen, n, 1]
+        lag_gen = window_gen_4d[:, -lag_idx, :, :]  # [B, N_gen, F_gen_full]
+        naive_gen = lag_gen[:, :, GEN_TARGET_INDICES].unsqueeze(2).expand_as(pred_gen)  # [B, N_gen, n, 1]
 
         # 6. Store raw tensors (detached, on CPU) for global metrics in on_test_end
         self.forecast_preds[dataloader_idx].append({
@@ -302,7 +303,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         MASE  : MAE_model / (MAE_naive + eps)                  per timestep
         MSSE  : MSE_model / (MSE_naive + eps)                  per timestep
 
-        Naive baseline: 48-hour lag (value from 48 hours ago repeated for all horizons)
+        Naive baseline: 48-hour lag when available (W >= 48), otherwise earliest window timestep
         """
         eps = 1e-8
 
