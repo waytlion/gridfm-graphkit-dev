@@ -40,7 +40,7 @@ optimizer:
   lr_patience: 5
 training:
   batch_size: 48            # reduced from 64 due to B*W folding
-  epochs: 150
+  epochs: 200
   losses:
     - ST_ForecastBusMSE
     - ST_ForecastGenMSE
