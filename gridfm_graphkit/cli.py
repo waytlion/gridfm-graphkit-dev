@@ -85,7 +85,6 @@ def main_cli(args):
         default_root_dir=args.log_dir,
         max_epochs=config_args.training.epochs,
         callbacks=get_training_callbacks(config_args), 
-        precision="bf16-mixed",
     )
     if args.command == "train" or args.command == "finetune":
         trainer.fit(model=model, datamodule=litGrid)
@@ -97,7 +96,6 @@ def main_cli(args):
             devices=1,
             num_nodes=1,
             log_every_n_steps=1,
-            precision="bf16-mixed",
             default_root_dir=args.log_dir,
         )
         test_trainer.test(model=model, datamodule=litGrid)
@@ -127,7 +125,6 @@ def main_cli(args):
             num_nodes=1,
             log_every_n_steps=1,
             default_root_dir=args.log_dir,
-            precision="bf16-mixed",
         )
         predictions = predict_trainer.predict(model=model, datamodule=litGrid)
 
