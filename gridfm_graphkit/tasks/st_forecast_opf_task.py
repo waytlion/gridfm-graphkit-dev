@@ -273,7 +273,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                 batch_size=B,
                 add_dataloader_idx=False,
                 sync_dist=True,
-                logger=False,
+                logger=True,
             )
         return total_loss
 
