@@ -10,7 +10,7 @@ data:
   - 26280 #3yrs
   test_ratio: 0.15
   val_ratio: 0.15
-  workers: 16
+  workers: 12
   split_by_load_scenario_idx: true
   temporal_split: true  
 model:
@@ -30,7 +30,7 @@ optimizer:
   lr_decay: 0.7
   lr_patience: 5
 training:
-  batch_size: 256
+  batch_size: 16
   epochs: 200
   loss_weights:
   - 0.1
