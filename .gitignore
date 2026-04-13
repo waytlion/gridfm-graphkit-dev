@@ -13,4 +13,5 @@ mlruns
 train.sh
 logs/
 build/
+examples/config/
 *.sh
