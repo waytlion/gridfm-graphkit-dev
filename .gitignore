@@ -15,3 +15,4 @@ logs/
 build/
 examples/config/
 *.sh
+st_forecast_opf_metrics_explanation.md
