@@ -43,6 +43,9 @@ def get_training_callbacks(args):
 
 
 def main_cli(args):
+    if getattr(args, "tf32", False):
+        torch.set_float32_matmul_precision("high")  # enables TF32 on Ampere+ GPUs
+
     logger = MLFlowLogger(
         save_dir=args.log_dir,
         experiment_name=args.exp_name,
@@ -75,6 +78,26 @@ def main_cli(args):
         print(f"Loading model weights from {args.model_path}")
         state_dict = torch.load(args.model_path, map_location="cpu")
         model.load_state_dict(state_dict)
+        precision = "bf16-true" if getattr(args, "bfloat16", False) else None
+
+    if precision:
+        print("Using bfloat16 precision (via Lightning Trainer precision='bf16-true')")
+
+    compile_mode = getattr(args, "compile", None)
+    if compile_mode is not None:
+        if compile_mode in ("max-autotune", "max-autotune-no-cudagraphs"):
+            # Allow ATen GEMM as fallback so Triton configs that exceed GPU
+            # shared-memory limits (e.g. triton_mm OOM) are skipped gracefully
+            # instead of causing autotuning errors.
+            import torch._inductor.config as inductor_cfg
+
+            inductor_cfg.max_autotune_gemm_backends = "ATEN,TRITON"
+        print(f"Compiling model with torch.compile(mode='{compile_mode}')")
+        model.model = torch.compile(model.model, mode=compile_mode)
+
+    trainer_kwargs = {}
+    if precision:
+        trainer_kwargs["precision"] = precision
 
     trainer = L.Trainer(
         logger=logger,
@@ -85,6 +108,7 @@ def main_cli(args):
         default_root_dir=args.log_dir,
         max_epochs=config_args.training.epochs,
         callbacks=get_training_callbacks(config_args), 
+        **trainer_kwargs,
     )
     if args.command == "train" or args.command == "finetune":
         trainer.fit(model=model, datamodule=litGrid)
@@ -97,6 +121,7 @@ def main_cli(args):
             num_nodes=1,
             log_every_n_steps=1,
             default_root_dir=args.log_dir,
+            **trainer_kwargs,
         )
         test_trainer.test(model=model, datamodule=litGrid)
 
@@ -125,6 +150,7 @@ def main_cli(args):
             num_nodes=1,
             log_every_n_steps=1,
             default_root_dir=args.log_dir,
+            **trainer_kwargs,
         )
         predictions = predict_trainer.predict(model=model, datamodule=litGrid)
 

@@ -1,9 +1,10 @@
 import os
+import time
+import torch
 from abc import ABC, abstractmethod
 import lightning as L
 from pytorch_lightning.utilities import rank_zero_only
 from lightning.pytorch.loggers import MLFlowLogger
-import torch
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 
@@ -18,12 +19,38 @@ class BaseTask(L.LightningModule, ABC):
         self.args = args
         self.data_normalizers = data_normalizers
         self.save_hyperparameters()
+    
+    def on_after_batch_transfer(self, batch, dataloader_idx: int):
+            """Cast float tensors in HeteroData batches to the model's parameter dtype.
+
+            Lightning's automatic mixed-precision casting does not handle PyG
+            HeteroData objects, so we do it manually here to avoid dtype mismatches
+            when --bfloat16 (precision='bf16-true') is used.
+            """
+            if not hasattr(self, "model"):
+                return batch
+            try:
+                target_dtype = next(self.model.parameters()).dtype
+            except StopIteration:
+                return batch
+            if target_dtype == torch.float32:
+                # No casting needed for the default precision.
+                return batch
+            # Walk all node- and edge-store tensors in a HeteroData/Data object.
+            for store in batch.stores:
+                for key, val in store.items():
+                    if isinstance(val, torch.Tensor) and val.is_floating_point():
+                        store[key] = val.to(target_dtype)
+            return batch
 
     @abstractmethod
     def forward(self, *args, **kwargs):
         """Forward pass"""
         pass
-
+    
+    def on_train_batch_start(self, batch, batch_idx):
+        self._batch_start_time = time.perf_counter()
+        
     @abstractmethod
     def training_step(self, batch):
         pass

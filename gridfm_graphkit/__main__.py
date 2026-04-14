@@ -66,6 +66,30 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
     exp_name = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
+    _compile_kwargs = dict(
+        type=str,
+        default=None,
+        nargs="?",
+        const="default",
+        choices=[
+            "default",
+            "reduce-overhead",
+            "max-autotune",
+            "max-autotune-no-cudagraphs",
+        ],
+        help="Enable torch.compile with the given mode (omit value for 'default').",
+    )
+    _bfloat16_kwargs = dict(
+        action="store_true",
+        default=False,
+        help="Cast model to bfloat16 (model.to(torch.bfloat16)).",
+    )
+    _tf32_kwargs = dict(
+        action="store_true",
+        default=False,
+        help="Enable TF32 on Ampere+ GPUs via torch.set_float32_matmul_precision('high').",
+    )
+
     # ---- TRAIN SUBCOMMAND ----
     train_parser = subparsers.add_parser("train", help="Run training")
     train_parser.add_argument("--config", type=str, required=True)
@@ -73,6 +97,9 @@ def main():
     train_parser.add_argument("--run_name", type=str, default="run")
     train_parser.add_argument("--log_dir", type=str, default="mlruns")
     train_parser.add_argument("--data_path", type=str, default="data")
+    train_parser.add_argument("--compile", **_compile_kwargs)
+    train_parser.add_argument("--bfloat16", **_bfloat16_kwargs)
+    train_parser.add_argument("--tf32", **_tf32_kwargs)
 
     # ---- FINETUNE SUBCOMMAND ----
     finetune_parser = subparsers.add_parser("finetune", help="Run fine-tuning")
@@ -82,6 +109,9 @@ def main():
     finetune_parser.add_argument("--run_name", type=str, default="run")
     finetune_parser.add_argument("--log_dir", type=str, default="mlruns")
     finetune_parser.add_argument("--data_path", type=str, default="data")
+    finetune_parser.add_argument("--compile", **_compile_kwargs)
+    finetune_parser.add_argument("--bfloat16", **_bfloat16_kwargs)
+    finetune_parser.add_argument("--tf32", **_tf32_kwargs)
 
     # ---- EVALUATE SUBCOMMAND ----
     evaluate_parser = subparsers.add_parser(
@@ -97,10 +127,14 @@ def main():
     evaluate_parser.add_argument("--run_name", type=str, default="run")
     evaluate_parser.add_argument("--log_dir", type=str, default="mlruns")
     evaluate_parser.add_argument("--data_path", type=str, default="data")
+    evaluate_parser.add_argument("--compile", **_compile_kwargs)
+    evaluate_parser.add_argument("--bfloat16", **_bfloat16_kwargs)
+    evaluate_parser.add_argument("--tf32", **_tf32_kwargs)
     evaluate_parser.add_argument("--compute_dc_ac_metrics", action="store_true",
                                  help="Compute ground-truth AC/DC power balance metrics on the test split.")
     evaluate_parser.add_argument("--save_output", action="store_true",
                                  help="Save per-bus predictions CSV via the predict step.")
+    
     # ---- PREDICT SUBCOMMAND ----
     predict_parser = subparsers.add_parser("predict", help="Evaluate model performance")
     predict_parser.add_argument("--model_path", type=str, required=None)
@@ -113,6 +147,9 @@ def main():
     predict_parser.add_argument("--log_dir", type=str, default="mlruns")
     predict_parser.add_argument("--data_path", type=str, default="data")
     predict_parser.add_argument("--output_path", type=str, default="data")
+    predict_parser.add_argument("--compile", **_compile_kwargs)
+    predict_parser.add_argument("--bfloat16", **_bfloat16_kwargs)
+    predict_parser.add_argument("--tf32", **_tf32_kwargs)
 
     args = parser.parse_args()
     main_cli(args)
