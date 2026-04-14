@@ -4,6 +4,7 @@ from gridfm_graphkit.datasets.hetero_powergrid_temporal_datamodule import LitGri
 from gridfm_graphkit.io.param_handler import NestedNamespace
 from gridfm_graphkit.training.callbacks import SaveBestModelStateDict
 import numpy as np
+import pandas as pd
 import yaml
 import torch
 import random
@@ -78,7 +79,8 @@ def main_cli(args):
         print(f"Loading model weights from {args.model_path}")
         state_dict = torch.load(args.model_path, map_location="cpu")
         model.load_state_dict(state_dict)
-        precision = "bf16-true" if getattr(args, "bfloat16", False) else None
+        
+    precision = "bf16-true" if getattr(args, "bfloat16", False) else None
 
     if precision:
         print("Using bfloat16 precision (via Lightning Trainer precision='bf16-true')")
