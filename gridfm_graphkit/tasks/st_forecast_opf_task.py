@@ -363,6 +363,8 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         VAR_NAMES = ["Pd (MW)", "Qd (MVar)", "Qg (MVar)", "Vm (p.u.)", "Va (rad)", "Pg (MW)"]
         METRIC_NAMES = ["RMSE", "MAE", "wMAPE", "MASE", "MSSE"]
 
+        custom_csv_data = {}
+
         for dataset_idx in range(len(self.args.data.networks)):
             if not self.forecast_preds[dataset_idx]:
                 continue
@@ -420,6 +422,14 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                 global_row[f"{vname} - MASE"] = vm["mase"]
                 global_row[f"{vname} - MSSE"] = vm["msse"]
 
+            # Save the specific global metrics requested for the refactored metrics.csv
+            custom_csv_data[dataset_name] = {
+                "mae_pd": var_metrics[0]["mae"],
+                "rmse_pd": var_metrics[0]["rmse"],
+                "mae_pg": var_metrics[5]["mae"],
+                "rmse_pg_gen": var_metrics[5]["rmse"],
+            }
+
             index_labels = [f"t+{t+1}" for t in range(n_horizon)] + ["GLOBAL"]
             df = pd.DataFrame(rows_per_t + [global_row], index=index_labels)
             df.index.name = "Horizon"
@@ -434,6 +444,46 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
 
         # Delegate RMSE.csv + metrics.csv (OPF physics metrics) to parent
         super().on_test_end()
+
+        # ── Overwrite metrics.csv with the custom requested layout ──
+        final_metrics = self.trainer.callback_metrics
+        for dataset_name, custom_data in custom_csv_data.items():
+            
+            def get_metric(m_name):
+                val = final_metrics.get(f"{dataset_name}/{m_name}", " ")
+                return val.item() if hasattr(val, "item") else val
+
+            new_data = {
+                "Metric": [
+                    "mae_pd",
+                    "rmse_pd",
+                    "mae_pg",
+                    "rmse_pg_gen",
+                    "Avg_ active res_ (MW)",
+                    "Avg_ reactive res_ (MVar)",
+                    "Mean optimality gap (%)",
+                    "Mean branch thermal violation from (MVA)",
+                    "Mean branch thermal violation to (MVA)",
+                    "Mean branch angle difference violation (radians)",
+                ],
+                "Value": [
+                    custom_data["mae_pd"],
+                    custom_data["rmse_pd"],
+                    custom_data["mae_pg"],
+                    custom_data["rmse_pg_gen"],
+                    get_metric("Active Power Loss"),
+                    get_metric("Reactive Power Loss"),
+                    get_metric("Opt gap"),
+                    get_metric("Branch termal violation from"),
+                    get_metric("Branch termal violation to"),
+                    get_metric("Branch voltage angle difference violations"),
+                ]
+            }
+
+            df_new = pd.DataFrame(new_data)
+            residuals_csv_path = os.path.join(test_dir, f"{dataset_name}_metrics.csv")
+            # We overwrite the original metrics.csv created by parent with exactly these required metrics
+            df_new.to_csv(residuals_csv_path, index=False)
 
 
 
