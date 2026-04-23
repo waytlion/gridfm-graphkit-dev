@@ -7,14 +7,14 @@ data:
   networks:
   - case14_ieee
   scenarios:
-  - 26280  # 3yrs
-  test_ratio: 0.15
-  val_ratio: 0.15
+  - 209589  # 3yrs=26280, 24=209589
+  test_ratio: 0.1
+  val_ratio: 0.1
   workers: 4
   split_by_load_scenario_idx: true
   temporal_split: true
   # ST-GNN temporal parameters
-  temporal_window: 168       # W: lookback window (168 hourly snapshots = 1 week)
+  temporal_window: 24       # W: lookback window (168 hourly snapshots = 1 week)
   forecast_horizon: 1       # n: number of target steps ahead
 model:
   type: ST_GNN_heterogeneous
@@ -39,7 +39,7 @@ optimizer:
   lr_decay: 0.7
   lr_patience: 5
 training:
-  batch_size: 256            # reduced from 64 due to B*W folding
+  batch_size: 32            # reduced from 64 due to B*W folding
   epochs: 200
   losses:
     - ST_ForecastBusMSE

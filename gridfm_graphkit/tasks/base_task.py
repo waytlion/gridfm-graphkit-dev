@@ -36,11 +36,29 @@ class BaseTask(L.LightningModule, ABC):
             if target_dtype == torch.float32:
                 # No casting needed for the default precision.
                 return batch
-            # Walk all node- and edge-store tensors in a HeteroData/Data object.
-            for store in batch.stores:
-                for key, val in store.items():
-                    if isinstance(val, torch.Tensor) and val.is_floating_point():
-                        store[key] = val.to(target_dtype)
+            
+            def cast_stores(obj):
+                """Helper to cast PyG objects in-place."""
+                if hasattr(obj, "stores"):
+                    for store in obj.stores:
+                        for key, val in store.items():
+                            if isinstance(val, torch.Tensor) and val.is_floating_point():
+                                store[key] = val.to(target_dtype)
+
+            # explicit key checks are used because the custom dataloader (collate_temporal) 
+            # returns a dict containing "folded_batch" and "target_batch" rather than a raw 
+            # PyG object. A naive `batch.stores` call on the dict would raise an AttributeError.
+            if isinstance(batch, dict):
+                if "folded_batch" in batch:
+                    cast_stores(batch["folded_batch"])
+                if "target_batch" in batch:
+                    cast_stores(batch["target_batch"])
+            elif hasattr(batch, "stores"):
+                cast_stores(batch)
+            elif isinstance(batch, (list, tuple)):
+                for item in batch:
+                    cast_stores(item)
+
             return batch
 
     @abstractmethod
