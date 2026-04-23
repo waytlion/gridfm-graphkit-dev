@@ -437,6 +437,27 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
             forecast_csv_path = os.path.join(test_dir, f"{dataset_name}_forecast.csv")
             df.to_csv(forecast_csv_path)
 
+            # ── Plot Forecast vs True for Bus 4 (index 3) ──
+            import matplotlib.pyplot as plt
+            bus_idx = 3  # "Bus 4" is a load bus in case14
+            if all_pred_bus.size(1) > bus_idx:
+                horizon_step = 0  # Plot the first step of the forecast (1-step-ahead) across all test samples
+                pred_pd = all_pred_bus[:, bus_idx, horizon_step, 0].cpu().numpy()
+                tgt_pd = all_tgt_bus[:, bus_idx, horizon_step, 0].cpu().numpy()
+                
+                plt.figure(figsize=(10, 6))
+                plt.plot(tgt_pd, label="True Pd", alpha=0.8)
+                plt.plot(pred_pd, label="Forecast Pd", alpha=0.6)
+                plt.xlabel("Test Set Timesteps")
+                plt.ylabel("Active Load Pd (MW)")
+                plt.title(f"Forecast vs True Pd - {dataset_name} Bus 4 (1-step ahead over full test set)")
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                
+                plot_path = os.path.join(test_dir, f"{dataset_name}_bus4_pd_plot.png")
+                plt.savefig(plot_path, bbox_inches='tight')
+                plt.close()
+
         # Cleanup
         self.forecast_preds = {i: [] for i in range(len(self.args.data.networks))}
         self.forecast_targets = {i: [] for i in range(len(self.args.data.networks))}
