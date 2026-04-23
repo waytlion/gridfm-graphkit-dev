@@ -351,12 +351,19 @@ class ST_GNN_heterogeneous(nn.Module):
         min_pg = target_gen_x_full[..., MIN_PG]    # [B, N_gen, n]
         max_pg = target_gen_x_full[..., MAX_PG]
 
-        forecast_bus[..., FORECAST_VM_IDX] = bound_with_sigmoid(
-            forecast_bus[..., FORECAST_VM_IDX], min_vm, max_vm,
-        )
-        forecast_gen[..., FORECAST_PG_IDX] = bound_with_sigmoid(
+        #  out-of-place ops (torch.cat / reassignment) instead of in-place index
+        # assignment because in place leads to -> runtimeError (version-counter conflicts during backpropagation)
+        forecast_gen = bound_with_sigmoid(
             forecast_gen[..., FORECAST_PG_IDX], min_pg, max_pg,
-        )
+        ).unsqueeze(-1)
+        vm_bounded = bound_with_sigmoid(
+            forecast_bus[..., FORECAST_VM_IDX], min_vm, max_vm,
+        ).unsqueeze(-1)
+        forecast_bus = torch.cat([
+            forecast_bus[..., :FORECAST_VM_IDX],
+            vm_bounded,
+            forecast_bus[..., FORECAST_VM_IDX + 1:],
+        ], dim=-1)
 
         return {
             "bus": forecast_bus,  # [B, N_bus, n, 5]: [Pd, Qd, Qg, Vm, Va]
