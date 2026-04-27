@@ -7,21 +7,21 @@ data:
   networks:
   - case14_ieee
   scenarios:
-  - 209589  # 3yrs=26280, 24=209589
+  - 26280  # 3yrs=26280, 24=209589
   test_ratio: 0.1
   val_ratio: 0.1
-  workers: 4
+  workers: 4 #!
   split_by_load_scenario_idx: true
   temporal_split: true
   # ST-GNN temporal parameters
-  temporal_window: 24       # W: lookback window (168 hourly snapshots = 1 week)
-  forecast_horizon: 1       # n: number of target steps ahead
+  temporal_window: 48       #! W: lookback window (168 hourly snapshots = 1 week)
+  forecast_horizon: 24       #! n: number of target steps ahead
 model:
   type: ST_GNN_heterogeneous
   # Spatial encoder (mirrors GNS_heterogeneous architecture)
   attention_head: 8
   edge_dim: 10
-  hidden_size: 12
+  hidden_size: 12 #!
   input_bus_dim: 15
   input_gen_dim: 6
   output_bus_dim: 5         # [Pd, Qd, Qg, Vm, Va]
@@ -39,7 +39,7 @@ optimizer:
   lr_decay: 0.7
   lr_patience: 5
 training:
-  batch_size: 32            # reduced from 64 due to B*W folding
+  batch_size: 128            #! reduced from 64 due to B*W folding
   epochs: 200
   losses:
     - ST_ForecastBusMSE

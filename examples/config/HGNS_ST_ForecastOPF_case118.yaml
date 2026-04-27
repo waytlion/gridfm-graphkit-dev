@@ -7,16 +7,16 @@ data:
   networks:
   - case118_ieee
   scenarios:
-  - 26280  #! 3yrs= 26280, 24yr=209589, df_load_bus_2002-2025=209589
+  - 26280  #! 3yrs= 26280, 24yr=209589
   test_ratio: 0.15 #!
   val_ratio: 0.15 #!
   workers: 12 #!
-  preload: False # preload all graphs into RAM before spawning DataLoader workers (requires sufficient RAM)
+  preload: True # preload all graphs into RAM before spawning DataLoader workers (requires sufficient RAM)
   split_by_load_scenario_idx: true
   temporal_split: true
   # ST-GNN temporal parameters
   temporal_window: 48       #! W: lookback window (168 hourly snapshots = 1 week)
-  forecast_horizon: 1    #! n: number of target steps ahead
+  forecast_horizon: 24    #! n: number of target steps ahead
 model:
   type: ST_GNN_heterogeneous
   # Spatial encoder (mirrors GNS_heterogeneous architecture)
@@ -29,10 +29,11 @@ model:
   output_gen_dim: 1         # [Pg]
   num_layers: 12
   dropout: 0.1
-  # TCN temporal encoder
   tcn_kernel_size: 3
-  # Late fusion
-  use_exogenous: false
+  use_exogenous: false #Late fusion
+  # Final prediction MLP (= decoder) 
+  mlp_hidden_dim: 1024    
+  mlp_num_layers: 1        
 optimizer:
   beta1: 0.9
   beta2: 0.999
@@ -40,8 +41,8 @@ optimizer:
   lr_decay: 0.7
   lr_patience: 5
 training:
-  batch_size: 16 #!    
-  epochs: 10 #!
+  batch_size: 32 #!    
+  epochs: 200 #!
   losses:
     - ST_ForecastBusMSE
     - ST_ForecastGenMSE
@@ -61,5 +62,5 @@ training:
 seed: 0
 verbose: true
 callbacks:
-  patience: 200
+  patience: 100
   tol: 0
