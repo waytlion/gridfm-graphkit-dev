@@ -252,7 +252,25 @@ class LitGridHeteroDataModule(L.LightningDataModule):
             # DataLoader workers share memory via fork copy-on-write instead
             # of each rebuilding their own cache from disk.
             if getattr(self.args.data, "preload", True):
-                self.datasets[i].preload()
+                if getattr(self.args, "verbose", False):
+                    if hasattr(self.datasets[i], "window_size") and hasattr(self.datasets[i], "forecast_horizon"):
+                        window_size = int(self.datasets[i].window_size)
+                        forecast_horizon = int(self.datasets[i].forecast_horizon)
+                        max_sid = int(getattr(self.datasets[i], "_total_scenarios", len(dataset)))
+                        required_scenarios = {
+                            sid
+                            for sample_idx in subset_indices
+                            for sid in range(int(sample_idx), int(sample_idx) + window_size + forecast_horizon)
+                            if 0 <= sid < max_sid
+                        }
+                        print(
+                            f"Preload debug: network='{network}', selected_samples={len(subset_indices)}, "
+                            f"required_scenarios={len(required_scenarios)}"
+                        )
+                    else:
+                        print(f"Preload debug: network='{network}', selected_samples={len(subset_indices)}")
+                # Preload only the selected subset (not the full dataset).
+                self.datasets[i].preload(subset_indices)
             else:
                 print(
                     f"WARNING: preload=false for '{network}' — DataLoader workers will "

@@ -18,7 +18,7 @@ Each sample returns:
 """
 
 import os.path as osp
-from typing import List, Tuple, Optional, Callable
+from typing import List, Tuple, Optional, Callable, Sequence
 
 import torch
 from tqdm import tqdm
@@ -126,17 +126,39 @@ class HeteroGridTemporalDatasetDisk(HeteroGridDatasetDisk):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def preload(self) -> None:
-        """Pre-load all individual scenario graphs into RAM.
+    def preload(self, indices: Optional[Sequence[int]] = None) -> None:
+        """Pre-load individual scenario graphs into RAM.
 
         Loads all _total_scenarios scenario files, normalizes, and applies
         transforms. __getitem__ assembles windows entirely from the
         in-memory list — zero disk I/O during training.
         Must be called after the normalizer has been fitted.
+
+        Args:
+            indices: Optional temporal sample indices (window starts). If
+                provided, only scenario files required by those windows and
+                horizons are preloaded.
         """
-        self._data_list = []
+        if indices is None:
+            scenario_indices = list(range(self._total_scenarios))
+        else:
+            required = set()
+            for sample_idx in indices:
+                sample_idx = int(sample_idx)
+                if sample_idx < 0 or sample_idx >= self.len():
+                    continue
+                start = sample_idx
+                end = sample_idx + self.window_size + self.forecast_horizon - 1
+                for scenario_idx in range(start, end + 1):
+                    if 0 <= scenario_idx < self._total_scenarios:
+                        required.add(scenario_idx)
+            scenario_indices = sorted(required)
+
+        # Sparse cache keyed by global scenario index.
+        self._preloaded_data = {}
+
         for scenario_idx in tqdm(
-            range(self._total_scenarios),
+            scenario_indices,
             desc=f"Pre-loading {self.__class__.__name__} into RAM",
         ):
             file_name = osp.join(self.processed_dir, f"data_index_{scenario_idx}.pt")
@@ -145,17 +167,17 @@ class HeteroGridTemporalDatasetDisk(HeteroGridDatasetDisk):
             self.data_normalizer.transform(data=data)
             if self.transform is not None:
                 data = self.transform(data)
-            self._data_list.append(data)
+            self._preloaded_data[scenario_idx] = data
 
         print("Dataset initialized. This should only print ONCE.")
         total_bytes = sum(
             v.nbytes
-            for data in self._data_list
+            for data in self._preloaded_data.values()
             for store in data.node_stores + data.edge_stores
             for v in store.values()
             if isinstance(v, torch.Tensor)
         )
-        print(f"  RAM estimate: {total_bytes / 1e9:.2f} GB ({len(self._data_list)} individual scenarios)")
+        print(f"  RAM estimate: {total_bytes / 1e9:.2f} GB ({len(self._preloaded_data)} individual scenarios)")
 
     def get(self, scenario_idx: int) -> HeteroData:
         """Override parent's get() to apply self.transform in the disk-fallback path.
@@ -165,8 +187,8 @@ class HeteroGridTemporalDatasetDisk(HeteroGridDatasetDisk):
         rather than relying on PyG to do it after the call.
         """
         #HPC path -> load all data to system-RAM once
-        if self._data_list is not None:
-            return self._data_list[scenario_idx]
+        if self._preloaded_data is not None and scenario_idx in self._preloaded_data:
+            return self._preloaded_data[scenario_idx]
         file_name = osp.join(
             self.processed_dir, f"data_index_{scenario_idx}.pt",
         )
