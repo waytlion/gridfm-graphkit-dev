@@ -6,7 +6,7 @@ import torch
 from torch_geometric.data import Dataset
 import pandas as pd
 from tqdm import tqdm
-from typing import Optional, Callable
+from typing import Optional, Callable, Sequence
 from torch_geometric.data import HeteroData
 from gridfm_graphkit.datasets.globals import VA_H, PG_H
 
@@ -83,7 +83,8 @@ class HeteroGridDatasetDisk(Dataset):
     ):
         self.data_normalizer = data_normalizer
         self.length = None
-        self._data_list = None  # populated by preload() after normalizer is fitted
+        # Maps dataset index -> preloaded normalized graph.
+        self._preloaded_data = None
 
         super().__init__(root, transform, pre_transform, pre_filter)
 
@@ -232,8 +233,6 @@ class HeteroGridDatasetDisk(Dataset):
             f.write("done")
 
     def len(self):
-        if self._data_list is not None:
-            return len(self._data_list)
         if self.length is None:
             files = [
                 f
@@ -246,38 +245,52 @@ class HeteroGridDatasetDisk(Dataset):
             self.length = len(files)
         return self.length
 
-    def preload(self) -> None:
-        """Pre-load all processed graphs into RAM.
+    def preload(self, indices: Optional[Sequence[int]] = None) -> None:
+        """Pre-load processed graphs into RAM.
 
         Must be called after the normalizer has been fitted and before
         DataLoader workers are spawned.  On Linux/HPC, worker processes
         inherit the populated list via fork copy-on-write — no RAM
-        duplication across the 32 workers.
+        duplication across the workers.
+
+        Args:
+            indices: Optional dataset indices to preload. If None, preload the
+                full dataset into a dense list. If provided, preload only those
+                indices into a sparse cache.
         """
         n = self.len()
-        self._data_list = []
-        for idx in tqdm(range(n), desc=f"Pre-loading {self.__class__.__name__} into RAM"):
+
+        if indices is None:
+            load_indices = range(n)
+        else:
+            # Normalize user-provided indices and keep deterministic order.
+            load_indices = sorted({int(i) for i in indices if 0 <= int(i) < n})
+
+        self._preloaded_data = {}
+
+        for idx in tqdm(load_indices, desc=f"Pre-loading {self.__class__.__name__} into RAM"):
             file_name = osp.join(self.processed_dir, f"data_index_{idx}.pt")
             data_dict = torch.load(file_name, weights_only=True)
             data = HeteroData.from_dict(data_dict)
             self.data_normalizer.transform(data=data)
-            self._data_list.append(data)
+            self._preloaded_data[idx] = data
 
         print("Dataset initialized. This should only print ONCE.")
         total_bytes = sum(
             v.nbytes
-            for data in self._data_list
+            for data in self._preloaded_data.values()
             for store in data.node_stores + data.edge_stores
             for v in store.values()
             if isinstance(v, torch.Tensor)
         )
-        print(f"  RAM estimate: {total_bytes / 1e9:.2f} GB ({len(self._data_list)} graphs)")
+        cached_count = len(self._preloaded_data)
+        print(f"  RAM estimate: {total_bytes / 1e9:.2f} GB ({cached_count} graphs)")
 
     def get(self, idx) -> HeteroData:
         """Returns heterogeneous graph with bus/gen/branch edges."""
-        #HPC path -> load all data to system-RAM once
-        if self._data_list is not None:
-            return self._data_list[idx]
+        # HPC path -> if preloaded, read from RAM first.
+        if self._preloaded_data is not None and idx in self._preloaded_data:
+            return self._preloaded_data[idx]
         
         # Slow-Path-Fallback: hidden attribute ensures to only print the warning ONCE
         if not getattr(self, '_warned_disk_fallback', False):
