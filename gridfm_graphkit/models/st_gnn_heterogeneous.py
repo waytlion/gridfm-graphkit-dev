@@ -242,22 +242,35 @@ class ST_GNN_heterogeneous(nn.Module):
         )
 
         # ---- Forecast decoders ----
-        # Linear broadcasts over [B, N, n] — MLP maps D (+ F_exo) -> F per step
+        # Direct multi-step decoding: maps D -> n * F 
         exo_bus_dim = len(self.exo_bus_indices) if self.use_exogenous else 0
         exo_gen_d = self.exo_gen_dim if self.use_exogenous else 0
 
-        self.forecast_decoder_bus = nn.Sequential(
-            nn.Linear(self.latent_dim + exo_bus_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_dim, self.forecast_bus_dim),
-        )
+        mlp_hidden_dim = getattr(args.model, "mlp_hidden_dim", 1024)
+        mlp_num_layers = getattr(args.model, "mlp_num_layers", 1)
 
-        self.forecast_decoder_gen = nn.Sequential(
-            nn.Linear(self.latent_dim + exo_gen_d, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_dim, self.forecast_gen_dim),
+        def build_decoder(in_dim, out_dim):
+            layers = [
+                nn.Linear(in_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.LeakyReLU(),
+            ]
+            curr_dim = hidden_dim
+            for _ in range(mlp_num_layers):
+                layers.extend([
+                    nn.Linear(curr_dim, mlp_hidden_dim),
+                    nn.LayerNorm(mlp_hidden_dim),
+                    nn.LeakyReLU(),
+                ])
+                curr_dim = mlp_hidden_dim
+            layers.append(nn.Linear(curr_dim, out_dim))
+            return nn.Sequential(*layers)
+
+        self.forecast_decoder_bus = build_decoder(
+            self.latent_dim + exo_bus_dim, self.forecast_bus_dim * self.n
+        )
+        self.forecast_decoder_gen = build_decoder(
+            self.latent_dim + exo_gen_d, self.forecast_gen_dim * self.n
         )
 
     # ------------------------------------------------------------------
@@ -308,36 +321,19 @@ class ST_GNN_heterogeneous(nn.Module):
         z_bus = self.tcn_bus(h_bus_4d)  # [B, N_bus, D]
         z_gen = self.tcn_gen(h_gen_4d)  # [B, N_gen, D]
 
-        # ==============================================================
-        # 4. Expand to n output steps and optional late fusion
-        # ==============================================================
-        # Broadcast z to [B, N, n, D] for per-step decoding
-        z_bus = z_bus.unsqueeze(2).expand(-1, -1, n, -1)  # [B, N_bus, n, D]
-        z_gen = z_gen.unsqueeze(2).expand(-1, -1, n, -1)  # [B, N_gen, n, D]
-
         if self.use_exogenous:
-            # target_batch["bus"].x: [B*n*N_bus, F_bus]
-            # reshape to [B, n, N_bus, F] then permute to [B, N_bus, n, F]
-            target_bus_x = target_batch["bus"].x
-            F_bus = target_bus_x.size(-1)
-            target_bus_4d = target_bus_x.view(B, n, N_bus, F_bus).permute(0, 2, 1, 3)
-            exo_bus = target_bus_4d[..., self.exo_bus_indices]  # [B, N_bus, n, F_exo]
-
-            # Need contiguous copy before cat (expand returns a view)
-            z_bus = torch.cat([z_bus.contiguous(), exo_bus], dim=-1)  # [B, N_bus, n, D+F_exo]
-
-            if self.exo_gen_dim > 0:
-                target_gen_x = target_batch["gen"].x
-                F_gen = target_gen_x.size(-1)
-                target_gen_4d = target_gen_x.view(B, n, N_gen, F_gen).permute(0, 2, 1, 3)
-                exo_gen = target_gen_4d[..., :self.exo_gen_dim]
-                z_gen = torch.cat([z_gen.contiguous(), exo_gen], dim=-1)
+            pass # (Exogenous features skipped for direct decoding for now)
 
         # ==============================================================
-        # 5. Forecast decoders — Linear broadcasts over [B, N, n]
+        # 5. Forecast decoders — Direct multi-step decoding
         # ==============================================================
-        forecast_bus = self.forecast_decoder_bus(z_bus)  # [B, N_bus, n, 5]
-        forecast_gen = self.forecast_decoder_gen(z_gen)  # [B, N_gen, n, 1]
+        # Decode single terminal state [B, N, D] directly to [B, N, n*F]
+        forecast_bus_flat = self.forecast_decoder_bus(z_bus)  # [B, N_bus, n * 5]
+        forecast_gen_flat = self.forecast_decoder_gen(z_gen)  # [B, N_gen, n * 1]
+        
+        # Reshape the flat sequences into proper time dimension: [B, N, n, F]
+        forecast_bus = forecast_bus_flat.view(B, N_bus, n, self.forecast_bus_dim)
+        forecast_gen = forecast_gen_flat.view(B, N_gen, n, self.forecast_gen_dim)
 
         # ==============================================================
         # 6. Bounds per step — Vm (sigmoid) and Pg (sigmoid)
