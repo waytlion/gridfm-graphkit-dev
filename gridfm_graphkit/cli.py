@@ -43,6 +43,32 @@ def get_training_callbacks(args):
     return [early_stop_callback, save_best_model_callback, checkpoint_callback, timer]
 
 
+def get_best_model_state_dict_path(trainer):
+    """Return path to the state_dict saved by SaveBestModelStateDict callback."""
+    best_callback = None
+    for callback in trainer.callbacks:
+        if isinstance(callback, SaveBestModelStateDict):
+            best_callback = callback
+            break
+
+    if best_callback is None:
+        return None
+
+    logger = trainer.logger
+    if isinstance(logger, MLFlowLogger):
+        model_dir = os.path.join(
+            logger.save_dir,
+            logger.experiment_id,
+            logger.run_id,
+            "artifacts",
+            "model",
+        )
+    else:
+        model_dir = os.path.join(logger.save_dir, "model")
+
+    return os.path.join(model_dir, best_callback.filename)
+
+
 def main_cli(args):
     if getattr(args, "tf32", False):
         torch.set_float32_matmul_precision("high")  # enables TF32 on Ampere+ GPUs
@@ -95,7 +121,7 @@ def main_cli(args):
 
             inductor_cfg.max_autotune_gemm_backends = "ATEN,TRITON"
         print(f"Compiling model with torch.compile(mode='{compile_mode}')")
-        model.model = torch.compile(model.model, mode=compile_mode)
+        model.model = torch.compile(model.model, mode=compile_mode, dynamic=True)
 
     trainer_kwargs = {}
     if precision:
@@ -114,6 +140,17 @@ def main_cli(args):
     )
     if args.command == "train" or args.command == "finetune":
         trainer.fit(model=model, datamodule=litGrid)
+
+        # Ensure evaluation/prediction uses the best validation model, not
+        # the final in-memory weights from the last optimization step.
+        trainer.strategy.barrier("load_best_model_state_dict")
+        best_model_state_dict_path = get_best_model_state_dict_path(trainer)
+        if best_model_state_dict_path is not None and os.path.exists(best_model_state_dict_path):
+            print(f"Loading best model weights from {best_model_state_dict_path} for evaluation.")
+            best_state_dict = torch.load(best_model_state_dict_path, map_location="cpu")
+            model.load_state_dict(best_state_dict)
+        else:
+            print("Best model state_dict not found; using latest in-memory weights for evaluation.")
 
     if args.command != "predict":
         test_trainer = L.Trainer(
