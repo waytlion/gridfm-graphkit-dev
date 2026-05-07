@@ -55,6 +55,51 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         return self.model(folded_batch, target_batch, B, W, N_bus)
 
     # ------------------------------------------------------------------
+    # Macro-temporal scaler fitting
+    # ------------------------------------------------------------------
+
+    def on_train_start(self):
+        """
+        Fit the Pd_macro standardizer on the training set before any
+        gradient step.
+
+        Iterates once over the training dataloader (no grad, no normalizer
+        call) to collect the raw normalised Pd sums for every sample, then
+        delegates to model.fit_macro_scaler().
+
+        The scaler statistics are stored as persistent model buffers so
+        they survive checkpointing and are available at test time.
+        """
+        from gridfm_graphkit.datasets.globals import PD_H as _PD_H
+
+        train_loader = self.trainer.train_dataloader
+        all_Pd_macro = []
+
+        with torch.no_grad():
+            for batch in train_loader:
+                folded_batch = batch["folded_batch"]
+                B = batch["B"]
+                W = batch["W"]
+                N_bus = batch["N_bus"]
+
+                # Move to the model device
+                bus_x = folded_batch["bus"].x.to(self.device)  # [B*W*N_bus, F_bus]
+                F_bus = bus_x.size(-1)
+                bus_x_4d = bus_x.view(B, W, N_bus, F_bus)  # [B, W, N_bus, F_bus]
+
+                # Sum Pd over all buses, then average over the entire lookback window W -> [B]
+                Pd_macro = bus_x_4d[:, :, :, _PD_H].sum(dim=-1).mean(dim=1)  # [B]
+                all_Pd_macro.append(Pd_macro.cpu())
+
+        all_Pd_macro_cat = torch.cat(all_Pd_macro, dim=0)  # [N_train_samples]
+        self.model.fit_macro_scaler(all_Pd_macro_cat)
+        print(
+            f"[ST_ForecastOPF] Pd_macro scaler fitted on {len(all_Pd_macro_cat)} training samples: "
+            f"mean={self.model.macro_scaler_mean.item():.4f}, "
+            f"std={self.model.macro_scaler_std.item():.4f}"
+        )
+
+    # ------------------------------------------------------------------
     # Shared step
     # ------------------------------------------------------------------
 
@@ -93,6 +138,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
             "n": n,
             "N_bus": N_bus,
             "bus_x": target_batch["bus"].x,
+            "gen_x_4d": target_gen_4d,
         }
 
         loss_dict = self.loss_fn(
