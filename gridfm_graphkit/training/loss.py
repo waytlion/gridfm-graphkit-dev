@@ -403,6 +403,39 @@ class ST_ForecastGenMSE(BaseLoss):
         return {"loss": loss_gen, "ST gen MSE (Pg)": loss_gen.detach()}
 
 
+@LOSS_REGISTRY.register("ST_OptimalityGapLoss")
+class ST_OptimalityGapLoss(BaseLoss):
+    """
+    Minimizes the optimality gap defined by the difference between predicted and true generation costs.
+    cost is C(Pg) = c0 + c1 * Pg + c2 * Pg ** 2
+    The loss computes the MSE (or MAE) of (C(Pg_pred) - C(Pg_true)).
+    """
+
+    def __init__(self, loss_args, args):
+        super().__init__()
+
+    def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
+        from gridfm_graphkit.datasets.globals import C0_H, C1_H, C2_H
+
+        c0_norm = mask["gen_x_4d"][..., C0_H:C0_H + 1]  # [B, N_gen, n, 1]
+        c1_norm = mask["gen_x_4d"][..., C1_H:C1_H + 1]
+        c2_norm = mask["gen_x_4d"][..., C2_H:C2_H + 1]
+
+        c0_unnorm = torch.sign(c0_norm) * (torch.exp(torch.abs(c0_norm)) - 1.0)
+        c1_unnorm = torch.sign(c1_norm) * (torch.exp(torch.abs(c1_norm)) - 1.0)
+        c2_unnorm = torch.sign(c2_norm) * (torch.exp(torch.abs(c2_norm)) - 1.0)        
+
+        pred_cost = c0_unnorm + c1_unnorm *  pred["gen"] + c2_unnorm * (pred["gen"] ** 2)
+        target_cost = c0_unnorm + c1_unnorm *  target["gen"] + c2_unnorm * ( target["gen"] ** 2)
+        
+        cost_loss = F.mse_loss(pred_cost, target_cost, reduction="mean")
+        
+        return {
+            "loss": cost_loss,
+            "Optimality Gap (MSE)": cost_loss.detach()
+        }
+
+
 @LOSS_REGISTRY.register("ST_PhysicsForecastLoss")
 class ST_PhysicsForecastLoss(BaseLoss):
     """
