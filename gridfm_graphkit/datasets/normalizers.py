@@ -626,3 +626,272 @@ class HeteroDataPerSampleMVANormalizer(Normalizer):
             "vn_kv_max": self._vn_kv_max_lookup[self._scenario_ids],
         }
    
+
+
+@NORMALIZERS_REGISTRY.register("HeteroDataWindowMVANormalizer")
+class HeteroDataWindowMVANormalizer(Normalizer):
+    """
+    Per-window MVA normalizer for temporal (sliding-window) ST-GNN datasets.
+
+    Motivation
+    ----------
+    With 20+ years of data and a temporal train/test split, test windows have
+    higher absolute load (secular growth). A global baseMVA fitted on training
+    data causes distribution shift at test time.
+
+    Per-window normalisation removes this: every lookback window is normalised
+    by its own 95th-percentile Pd/Qd/Pg baseMVA. The model learns load
+    *patterns*; the per-window baseMVA reconstructs absolute MW values at
+    denormalisation time without any leakage (baseMVA is computed purely from
+    the observable lookback window).
+
+    Architecture
+    ------------
+    * ``transform()`` (preload time, per individual scenario):
+        Static/time-invariant transforms only: VA deg->rad, VN_KV/vn_kv_max,
+        log1p for generator costs, ANG_MIN/MAX deg->rad, GS/BS/Y scaled by
+        baseMVA_static (fitted on training data).
+        Power features (Pd, Qd, Qg, Pg, P_E, Q_E, RATE_A, limits) left in MW.
+
+    * ``compute_window_baseMVA(batch_list)`` + ``apply_window_power_norm(...)``
+        Called from collate_temporal_window_norm() after batching.
+        Computes per-sample baseMVA from the lookback Pd/Qd/Pg values, then
+        normalises power features in-place on the collated batch tensors.
+
+    * ``inverse_transform(data, window_baseMVA)`` /
+      ``inverse_output(output, batch, window_baseMVA)``:
+        Require the [B] window_baseMVA tensor from the batch dict.
+    """
+
+    fit_strategy = "fit_on_train"
+
+    def __init__(self, args):
+        self.baseMVA_orig   = getattr(args.data, "baseMVA", 100)
+        self.baseMVA_static = None   # 95th-pct from training Pd/Qd/Pg (for GS/BS/Y)
+        self.vn_kv_max      = None
+        self.task_name      = getattr(args.task, "task_name", "ST_ForecastOPF")
+
+    def to(self, device):
+        pass
+
+    # ------------------------------------------------------------------
+    # Fitting
+    # ------------------------------------------------------------------
+
+    def fit(self, data_path: str, scenario_ids: List[int]) -> dict:
+        bus_data = pd.read_parquet(os.path.join(data_path, "bus_data.parquet"))
+        gen_data = pd.read_parquet(os.path.join(data_path, "gen_data.parquet"))
+        bus_data = bus_data[bus_data["scenario"].isin(scenario_ids)]
+        gen_data = gen_data[gen_data["scenario"].isin(scenario_ids)]
+
+        non_zero = pd.concat([
+            bus_data["Pd"][bus_data["Pd"] != 0],
+            bus_data["Qd"][bus_data["Qd"] != 0],
+            gen_data["p_mw"][gen_data["p_mw"] != 0],
+            bus_data["Qg"][bus_data["Qg"] != 0],
+        ])
+        self.baseMVA_static = float(np.percentile(non_zero, 95))
+        self.vn_kv_max      = float(bus_data["vn_kv"].max())
+
+        return {
+            "baseMVA_orig":   torch.tensor(self.baseMVA_orig,   dtype=torch.float),
+            "baseMVA_static": torch.tensor(self.baseMVA_static, dtype=torch.float),
+            "vn_kv_max":      torch.tensor(self.vn_kv_max,      dtype=torch.float),
+        }
+
+    def fit_from_dict(self, params: dict):
+        self.baseMVA_static = params["baseMVA_static"].item()
+        self.vn_kv_max      = params["vn_kv_max"].item()
+        bmo = params.get("baseMVA_orig")
+        self.baseMVA_orig   = bmo.item() if hasattr(bmo, "item") else float(bmo)
+
+    # ------------------------------------------------------------------
+    # Static transform (preload time, per individual scenario graph)
+    # ------------------------------------------------------------------
+
+    def transform(self, data: HeteroData):
+        """Apply only time-invariant transforms; power features stay in MW."""
+        if self.vn_kv_max is None or self.baseMVA_static is None:
+            raise ValueError("HeteroDataWindowMVANormalizer not fitted.")
+
+        ratio = self.baseMVA_orig / self.baseMVA_static
+
+        # Bus input
+        data.x_dict["bus"][:, VA_H]   *= torch.pi / 180.0
+        data.x_dict["bus"][:, GS]     *= ratio
+        data.x_dict["bus"][:, BS]     *= ratio
+        data.x_dict["bus"][:, VN_KV] /= self.vn_kv_max
+
+        # Bus label — angle only
+        data.y_dict["bus"][:, VA_H]   *= torch.pi / 180.0
+
+        # Generator costs — log-compression
+        for feat in [C0_H, C1_H, C2_H]:
+            v = data.x_dict["gen"][:, feat]
+            data.x_dict["gen"][:, feat] = torch.sign(v) * torch.log1p(v.abs())
+
+        # Edge — admittances & angle limits
+        ea = data.edge_attr_dict[("bus", "connects", "bus")]
+        ea[:, YFF_TT_R: YFT_TF_I + 1] *= ratio
+        ea[:, ANG_MIN]                  *= torch.pi / 180.0
+        ea[:, ANG_MAX]                  *= torch.pi / 180.0
+
+        # Power features left in raw MW; window normalisation applied in collate.
+        data.is_normalized = False
+
+    # ------------------------------------------------------------------
+    # Window-level power normalisation helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def compute_window_baseMVA(batch_list) -> torch.Tensor:
+        """
+        Compute per-sample baseMVA from the lookback window Pd/Qd/Pg values.
+        All power values are still in MW at this point (before power normalisation).
+
+        Returns:
+            window_baseMVA: [B] float tensor.
+        """
+        baseMVAs = []
+        for window_graphs, _ in batch_list:
+            vals = []
+            for g in window_graphs:
+                vals.append(g["bus"].x[:, PD_H].abs())
+                vals.append(g["bus"].x[:, QD_H].abs())
+                vals.append(g["gen"].x[:, PG_H].abs())
+            all_vals = torch.cat(vals)
+            non_zero = all_vals[all_vals > 1e-6]
+            baseMVA  = float(torch.quantile(non_zero, 0.95).item()) if non_zero.numel() > 0 else 1.0
+            baseMVAs.append(max(baseMVA, 1.0))
+        return torch.tensor(baseMVAs, dtype=torch.float)
+
+    @staticmethod
+    def apply_window_power_norm(folded_batch, target_batch,
+                                window_baseMVA: torch.Tensor,
+                                W: int, n: int, N_bus: int, N_gen: int):
+        """
+        Normalise power features in-place on already-collated batch tensors.
+
+        folded_batch / target_batch : PyG Batch (B*W and B*n graphs)
+        window_baseMVA              : [B] per-sample baseMVA (MW)
+        """
+        device = folded_batch["bus"].x.device
+        wbmva  = window_baseMVA.to(device)
+
+        # per-node scaling vectors (sample-major, time-minor layout)
+        b_bus_f = wbmva.repeat_interleave(W * N_bus)   # [B*W*N_bus]
+        b_gen_f = wbmva.repeat_interleave(W * N_gen)
+        b_bus_t = wbmva.repeat_interleave(n * N_bus)   # [B*n*N_bus]
+        b_gen_t = wbmva.repeat_interleave(n * N_gen)
+
+        # per-edge scaling via bus graph assignment
+        bg_f  = folded_batch["bus"].batch
+        ei_f  = folded_batch[("bus","connects","bus")].edge_index
+        b_e_f = wbmva[bg_f[ei_f[0]] // W]
+
+        bg_t  = target_batch["bus"].batch
+        ei_t  = target_batch[("bus","connects","bus")].edge_index
+        b_e_t = wbmva[bg_t[ei_t[0]] // n]
+
+        # folded batch
+        xb = folded_batch["bus"].x
+        xb[:, PD_H]     /= b_bus_f;  xb[:, QD_H]     /= b_bus_f
+        xb[:, QG_H]     /= b_bus_f;  xb[:, MIN_QG_H] /= b_bus_f
+        xb[:, MAX_QG_H] /= b_bus_f
+        xg = folded_batch["gen"].x
+        xg[:, PG_H] /= b_gen_f;  xg[:, MIN_PG] /= b_gen_f;  xg[:, MAX_PG] /= b_gen_f
+        ea = folded_batch[("bus","connects","bus")].edge_attr
+        ea[:, P_E] /= b_e_f;  ea[:, Q_E] /= b_e_f;  ea[:, RATE_A] /= b_e_f
+
+        # target batch
+        yb = target_batch["bus"].x
+        yb[:, PD_H]     /= b_bus_t;  yb[:, QD_H]     /= b_bus_t
+        yb[:, QG_H]     /= b_bus_t;  yb[:, MIN_QG_H] /= b_bus_t
+        yb[:, MAX_QG_H] /= b_bus_t
+        yg = target_batch["gen"].x
+        yg[:, PG_H] /= b_gen_t;  yg[:, MIN_PG] /= b_gen_t;  yg[:, MAX_PG] /= b_gen_t
+        ea_t = target_batch[("bus","connects","bus")].edge_attr
+        ea_t[:, P_E] /= b_e_t;  ea_t[:, Q_E] /= b_e_t;  ea_t[:, RATE_A] /= b_e_t
+
+        folded_batch.is_normalized = True
+        target_batch.is_normalized = True
+
+    # ------------------------------------------------------------------
+    # Inverse transforms
+    # ------------------------------------------------------------------
+
+    def inverse_transform(self, data: HeteroData, window_baseMVA: torch.Tensor):
+        """
+        Denormalise power features. VA/VN_KV/costs stay in transformed form
+        (physics layers expect radians, log-space, etc.).
+
+        Args:
+            data           : collated PyG Batch (target_batch or folded_batch)
+            window_baseMVA : [B] tensor from batch dict
+        """
+        device   = data["bus"].x.device
+        wbmva    = window_baseMVA.to(device)
+        bus_b    = data["bus"].batch
+        gen_b    = data["gen"].batch
+        n_graphs = int(bus_b.max().item()) + 1
+        gpb      = n_graphs // wbmva.size(0)          # graphs-per-sample (W or n)
+
+        b_bus = wbmva[bus_b // gpb]
+        b_gen = wbmva[gen_b // gpb]
+
+        xb = data["bus"].x
+        xb[:, PD_H] *= b_bus;  xb[:, QD_H] *= b_bus
+        xb[:, QG_H] *= b_bus;  xb[:, MIN_QG_H] *= b_bus;  xb[:, MAX_QG_H] *= b_bus
+
+        # Restore GS and BS to physical Siemens units using baseMVA_static
+        xb[:, GS] *= self.baseMVA_static
+        xb[:, BS] *= self.baseMVA_static
+
+        xg = data["gen"].x
+        xg[:, PG_H] *= b_gen;  xg[:, MIN_PG] *= b_gen;  xg[:, MAX_PG] *= b_gen
+        
+        # Restore edge admittances
+        if ("bus", "connects", "bus") in data.edge_attr_dict:
+            ea = data.edge_attr_dict[("bus", "connects", "bus")]
+            ea[:, YFF_TT_R: YFT_TF_I + 1] *= self.baseMVA_static
+        if getattr(data["bus"], "y", None) is not None:
+            data["bus"].y[:, PD_H] *= b_bus
+            data["bus"].y[:, QD_H] *= b_bus
+            data["bus"].y[:, QG_H] *= b_bus
+        if getattr(data["gen"], "y", None) is not None:
+            data["gen"].y[:, PG_H] *= b_gen
+
+        data.is_normalized = False
+
+    def inverse_output(self, output: dict, batch, window_baseMVA: torch.Tensor):
+        """
+        Denormalise model predictions.
+
+        Args:
+            output         : {"bus": [B*n*N_bus, 5], "gen": [B*n*N_gen, 1]}
+            batch          : target_batch (for .batch attribute)
+            window_baseMVA : [B] tensor from batch dict
+        """
+        device   = output["bus"].device
+        wbmva    = window_baseMVA.to(device)
+        bus_b    = batch["bus"].batch
+        gen_b    = batch["gen"].batch
+        n_graphs = int(bus_b.max().item()) + 1
+        n        = n_graphs // wbmva.size(0)
+
+        b_bus = wbmva[bus_b // n]
+        b_gen = wbmva[gen_b // n]
+
+        # ForecastOPF output format: [Pd, Qd, Qg, Vm, Va]
+        output["bus"][:, PD_H] *= b_bus   # Pd
+        output["bus"][:, QD_H] *= b_bus   # Qd
+        output["bus"][:, QG_H] *= b_bus   # Qg
+        # Vm (3) and Va (4) — stay as p.u. and radians
+        output["gen"][:, PG_OUT_GEN] *= b_gen
+
+    def get_stats(self) -> dict:
+        return {
+            "baseMVA_orig":   torch.tensor(self.baseMVA_orig,   dtype=torch.float),
+            "baseMVA_static": torch.tensor(self.baseMVA_static, dtype=torch.float),
+            "vn_kv_max":      torch.tensor(self.vn_kv_max,      dtype=torch.float),
+        }

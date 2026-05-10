@@ -21,6 +21,7 @@ from gridfm_graphkit.datasets.hetero_powergrid_forecast_datamodule import (
 from gridfm_graphkit.datasets.powergrid_hetero_temporal_dataset import (
     HeteroGridTemporalDatasetDisk,
     collate_temporal,
+    collate_temporal_window_norm,
 )
 
 
@@ -55,6 +56,15 @@ class LitGridHeteroTemporalDataModule(LitGridHeteroForecastDataModule):
             transform=get_task_transforms(args=self.args),
         )
 
+    def _get_collate_fn(self):
+        """Return the appropriate collate function based on the normalizer type."""
+        from gridfm_graphkit.datasets.normalizers import HeteroDataWindowMVANormalizer
+        if self.data_normalizers and isinstance(
+            self.data_normalizers[0], HeteroDataWindowMVANormalizer
+        ):
+            return collate_temporal_window_norm
+        return collate_temporal
+
     # ------------------------------------------------------------------
     # DataLoaders — use torch DataLoader + collate_temporal
     # ------------------------------------------------------------------
@@ -66,7 +76,7 @@ class LitGridHeteroTemporalDataModule(LitGridHeteroForecastDataModule):
             shuffle=True,
             num_workers=self.args.data.workers,
             pin_memory=True,
-            collate_fn=collate_temporal,
+            collate_fn=self._get_collate_fn(),
         )
 
     def val_dataloader(self):
@@ -76,7 +86,7 @@ class LitGridHeteroTemporalDataModule(LitGridHeteroForecastDataModule):
             shuffle=False,
             num_workers=self.args.data.workers,
             pin_memory=True,
-            collate_fn=collate_temporal,
+            collate_fn=self._get_collate_fn(),
         )
 
     def test_dataloader(self):
@@ -87,7 +97,7 @@ class LitGridHeteroTemporalDataModule(LitGridHeteroForecastDataModule):
                 shuffle=False,
                 num_workers=self.args.data.workers,
                 pin_memory=True,
-                collate_fn=collate_temporal,
+                collate_fn=self._get_collate_fn(),
             )
             for ds in self.test_datasets
         ]
@@ -100,7 +110,7 @@ class LitGridHeteroTemporalDataModule(LitGridHeteroForecastDataModule):
                 shuffle=False,
                 num_workers=self.args.data.workers,
                 pin_memory=True,
-                collate_fn=collate_temporal,
+                collate_fn=self._get_collate_fn(),
             )
             for ds in self.test_datasets
         ]

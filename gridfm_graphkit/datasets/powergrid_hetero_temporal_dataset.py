@@ -286,3 +286,66 @@ def collate_temporal(
         "n": n,
         "N_bus": N_bus,
     }
+
+
+def collate_temporal_window_norm(
+    batch_list: List[Tuple[List[HeteroData], List[HeteroData]]],
+) -> dict:
+    """
+    Collate function for HeteroGridTemporalDatasetDisk when using
+    HeteroDataWindowMVANormalizer.
+
+    Identical to ``collate_temporal`` but additionally:
+      1. Computes a per-sample baseMVA from the lookback window Pd/Qd/Pg.
+      2. Applies power normalisation in-place on the collated batch tensors.
+      3. Returns ``window_baseMVA`` [B] in the output dict.
+
+    The normaliser's static transforms (VA, VN_KV, costs, GS/BS/Y) are
+    already applied at preload time.  This function only handles the
+    scale-dependent power features.
+
+    Returns:
+        dict with keys:
+            folded_batch    : Batch of B*W window graphs  (power-normalised)
+            target_batch    : Batch of B*n target graphs  (power-normalised)
+            B, W, n, N_bus  : collation metadata
+            window_baseMVA  : [B] float tensor — per-sample baseMVA (MW)
+    """
+    from gridfm_graphkit.datasets.normalizers import HeteroDataWindowMVANormalizer
+
+    B = len(batch_list)
+    W = len(batch_list[0][0])
+    n = len(batch_list[0][1])
+
+    # Compute per-sample baseMVA BEFORE batching (graphs still individual)
+    window_baseMVA = HeteroDataWindowMVANormalizer.compute_window_baseMVA(batch_list)
+
+    # Flatten: sample-major, time-minor order
+    all_window_graphs: List[HeteroData] = []
+    all_target_graphs: List[HeteroData] = []
+    for window_graphs, target_graphs in batch_list:
+        assert len(window_graphs) == W
+        assert len(target_graphs) == n
+        all_window_graphs.extend(window_graphs)
+        all_target_graphs.extend(target_graphs)
+
+    N_bus = all_window_graphs[0]["bus"].x.size(0)
+    N_gen = all_window_graphs[0]["gen"].x.size(0)
+
+    folded_batch = Batch.from_data_list(all_window_graphs)
+    target_batch = Batch.from_data_list(all_target_graphs)
+
+    # Apply power normalisation in-place on the collated tensors
+    HeteroDataWindowMVANormalizer.apply_window_power_norm(
+        folded_batch, target_batch, window_baseMVA, W, n, N_bus, N_gen,
+    )
+
+    return {
+        "folded_batch":   folded_batch,
+        "target_batch":   target_batch,
+        "B":              B,
+        "W":              W,
+        "n":              n,
+        "N_bus":          N_bus,
+        "window_baseMVA": window_baseMVA,   # [B] — needed for inverse_transform
+    }
