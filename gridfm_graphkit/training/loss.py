@@ -373,6 +373,13 @@ class ST_ForecastBusMSE(BaseLoss):
         target_load = target["bus"][..., 0:2]
         target_opf = target["bus"][..., 2:5]
 
+        # Descale into stable Global P.U. space when window normalizer is used
+        if mask is not None and mask.get("window_baseMVA") is not None:
+            baseMVA = mask["window_baseMVA"].view(-1, 1, 1, 1).to(pred["bus"].device) 
+            scaled_baseMVA = baseMVA / mask["static_baseMVA"]
+            pred_load = pred_load * scaled_baseMVA
+            target_load = target_load * scaled_baseMVA
+
         loss_load = F.mse_loss(pred_load, target_load, reduction="mean")
         loss_opf = F.mse_loss(pred_opf, target_opf, reduction="mean")
 
@@ -399,6 +406,13 @@ class ST_ForecastGenMSE(BaseLoss):
         super().__init__()
 
     def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
+        # Descale into stable Global P.U. space when window normalizer is used
+        if mask is not None and mask.get("window_baseMVA") is not None:
+            baseMVA = mask["window_baseMVA"].view(-1, 1, 1, 1).to(pred["gen"].device) 
+            scaled_baseMVA = baseMVA / mask["static_baseMVA"]
+            pred["gen"] = pred["gen"] * scaled_baseMVA
+            target["gen"] = target["gen"] * scaled_baseMVA
+
         loss_gen = F.mse_loss(pred["gen"], target["gen"], reduction="mean")
         return {"loss": loss_gen, "ST gen MSE (Pg)": loss_gen.detach()}
 
@@ -425,8 +439,19 @@ class ST_OptimalityGapLoss(BaseLoss):
         c1_unnorm = torch.sign(c1_norm) * (torch.exp(torch.abs(c1_norm)) - 1.0)
         c2_unnorm = torch.sign(c2_norm) * (torch.exp(torch.abs(c2_norm)) - 1.0)        
 
-        pred_cost = c0_unnorm + c1_unnorm *  pred["gen"] + c2_unnorm * (pred["gen"] ** 2)
-        target_cost = c0_unnorm + c1_unnorm *  target["gen"] + c2_unnorm * ( target["gen"] ** 2)
+        # Convert predictions/targets from p.u. back to MW for the cost function
+        baseMVA = mask.get("window_baseMVA", None)
+        if baseMVA is not None:
+            # Reshape [B] -> [B, 1, 1, 1] to broadcast against [B, N_gen, n, 1]
+            baseMVA = baseMVA.view(mask["B"], 1, 1, 1).to(pred["gen"].device)
+        else:
+            baseMVA = 1 # dont denormalize ...
+
+        pred_pg_mw = pred["gen"] * baseMVA
+        target_pg_mw = target["gen"] * baseMVA
+
+        pred_cost = c0_unnorm + c1_unnorm * pred_pg_mw + c2_unnorm * (pred_pg_mw ** 2)
+        target_cost = c0_unnorm + c1_unnorm * target_pg_mw + c2_unnorm * (target_pg_mw ** 2)
         
         cost_loss = F.mse_loss(pred_cost, target_cost, reduction="mean")
         
@@ -522,7 +547,13 @@ class ST_PhysicsForecastLoss(BaseLoss):
         P_in, Q_in = self.node_injection_layer(Pft, Qft, edge_index_bb, num_bus_total)
         res_P, res_Q = self.node_residuals_layer(P_in, Q_in, bus_data_pred, bus_x_physics)
 
-        # Scalar loss = mean squared residuals
+        # For sample-wise normalizer: Scale the resulting p.u. residuals into stable Global P.U. space
+        if mask is not None and mask.get("window_baseMVA") is not None:
+            scale = mask["window_baseMVA"] / mask["static_baseMVA"]
+            b_bus_scale = scale.repeat_interleave(n * N_bus).squeeze().to(res_P.device)
+            res_P = res_P * b_bus_scale
+            res_Q = res_Q * b_bus_scale
+
         loss = torch.mean(res_P ** 2 + res_Q ** 2)
 
         return {

@@ -25,8 +25,6 @@ from gridfm_graphkit.datasets.globals import (
     MIN_PG, MAX_PG,
 )
 
-# Dimension added to z_bus by Pd_macro concatenation
-PD_MACRO_DIM = 1
 
 
 # Forecast output indices (5-dim bus: [Pd, Qd, Qg, Vm, Va])
@@ -244,12 +242,6 @@ class ST_GNN_heterogeneous(nn.Module):
             dropout=tcn_dropout,
         )
 
-        # ---- Macro-temporal scaler buffers (fitted on training set) ----
-        # Registered as persistent buffers so they are saved/loaded with
-        # the model checkpoint automatically.
-        self.register_buffer("macro_scaler_mean", torch.zeros(1))
-        self.register_buffer("macro_scaler_std", torch.ones(1))
-        self._macro_scaler_fitted = False
 
         # ---- Forecast decoders ----
         # Direct multi-step decoding: maps D -> n * F
@@ -278,37 +270,14 @@ class ST_GNN_heterogeneous(nn.Module):
             layers.append(nn.Linear(curr_dim, out_dim))
             return nn.Sequential(*layers)
 
-        # Bus decoder: latent_dim + PD_MACRO_DIM (+ exo if used)
+        # Bus decoder: latent_dim (+ exo if used)
         self.forecast_decoder_bus = build_decoder(
-            self.latent_dim + PD_MACRO_DIM + exo_bus_dim, self.forecast_bus_dim * self.n
+            self.latent_dim + exo_bus_dim, self.forecast_bus_dim * self.n
         )
-        # Gen decoder: latent_dim + PD_MACRO_DIM (+ exo if used)
+        # Gen decoder: latent_dim (+ exo if used)
         self.forecast_decoder_gen = build_decoder(
-            self.latent_dim + PD_MACRO_DIM + exo_gen_d, self.forecast_gen_dim * self.n
+            self.latent_dim + exo_gen_d, self.forecast_gen_dim * self.n
         )
-
-    # ------------------------------------------------------------------
-    # Macro-temporal scaler
-    # ------------------------------------------------------------------
-
-    def fit_macro_scaler(self, pd_macro_values: torch.Tensor) -> None:
-        """
-        Fit the Pd_macro standardizer on the training set.
-
-        Must be called once before training begins, using Pd_macro values
-        computed exclusively from the training split.
-
-        Args:
-            pd_macro_values: 1-D or 2-D tensor of raw (normalised) grid load
-                sums collected over the entire training set.  Shape: [N] or
-                [N, 1] where N is the number of training samples.
-        """
-        vals = pd_macro_values.float().reshape(-1)
-        self.macro_scaler_mean.copy_(vals.mean())
-        std = vals.std(unbiased=False)
-        # Guard against constant-load edge cases
-        self.macro_scaler_std.copy_(std.clamp(min=1e-6))
-        self._macro_scaler_fitted = True
 
     # ------------------------------------------------------------------
     # Forward
@@ -362,35 +331,10 @@ class ST_GNN_heterogeneous(nn.Module):
             pass # (Exogenous features skipped for direct decoding for now)
 
         # ==============================================================
-        # 4. Macro-Temporal Embedding Injection
+        # 4. Forecast decoders — Direct multi-step decoding
         # ==============================================================
-        # Compute raw total grid load Pd_macro over the inpuut window.
-        bus_x_folded = folded_batch["bus"].x  # [B*W*N_bus, F_bus]
-        F_bus = bus_x_folded.size(-1)
-        bus_x_4d = bus_x_folded.view(B, W, N_bus, F_bus)  # [B, W, N_bus, F_bus]
-        
-        # Sum Pd over all buses, then average over the entire lookback window W -> [B, 1]
-        Pd_macro = bus_x_4d[:, :, :, PD_H].sum(dim=-1).mean(dim=1, keepdim=True)  # [B, 1]
-
-        # Standardize with training-set statistics (zero-centred, unit variance)
-        Pd_macro_std = (Pd_macro - self.macro_scaler_mean) / self.macro_scaler_std  # [B, 1]
-
-        # Expand to match z_bus spatial dimension: [B, N_bus, 1]
-        Pd_macro_expanded_bus = Pd_macro_std.unsqueeze(1).expand(B, N_bus, PD_MACRO_DIM)  # [B, N_bus, 1]
-        # Expand to match z_gen spatial dimension: [B, N_gen, 1]
-        N_gen = z_gen.size(1)
-        Pd_macro_expanded_gen = Pd_macro_std.unsqueeze(1).expand(B, N_gen, PD_MACRO_DIM)  # [B, N_gen, 1]
-
-        # Concatenate onto latent context
-        z_bus_conditioned = torch.cat([z_bus, Pd_macro_expanded_bus], dim=-1)  # [B, N_bus, D+1]
-        z_gen_conditioned = torch.cat([z_gen, Pd_macro_expanded_gen], dim=-1)  # [B, N_gen, D+1]
-
-        # ==============================================================
-        # 5. Forecast decoders — Direct multi-step decoding
-        # ==============================================================
-        # Bus/Gen decoders operate on the macro-conditioned latent context.
-        forecast_bus_flat = self.forecast_decoder_bus(z_bus_conditioned)  # [B, N_bus, n * 5]
-        forecast_gen_flat = self.forecast_decoder_gen(z_gen_conditioned)  # [B, N_gen, n * 1]
+        forecast_bus_flat = self.forecast_decoder_bus(z_bus)  # [B, N_bus, n * 5]
+        forecast_gen_flat = self.forecast_decoder_gen(z_gen)  # [B, N_gen, n * 1]
         
         # Reshape the flat sequences into proper time dimension: [B, N, n, F]
         forecast_bus = forecast_bus_flat.view(B, N_bus, n, self.forecast_bus_dim)
