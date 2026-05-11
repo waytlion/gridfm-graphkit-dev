@@ -2,14 +2,12 @@
 Standalone Spatio-Temporal GNN for MP-ACOPF forecasting.
 
 Contains two classes:
-    1. UnmaskedSpatialEncoder - lightweight spatial backbone (no physics/MLPs)
+    1. UnmaskedSpatialEncoder - spatial backbone (no physics/MLPs)
     2. ST_GNN_heterogeneous   - end-to-end forecaster composing spatial encoder,
                                 temporal TCN, optional late fusion, and forecast decoders
 
 The spatial encoder mirrors the TransformerConv layers of GNS_heterogeneous
 but strips away masking, physics decoders, and per-layer MLP decoding.
-This avoids VRAM bloat on folded (B*W) batches while preserving the
-message-passing architecture for potential weight transfer.
 """
 
 import torch
@@ -192,11 +190,13 @@ class ST_GNN_heterogeneous(nn.Module):
         folded_batch [B*W graphs]
           -> UnmaskedSpatialEncoder   -> h_bus, h_gen
           -> unfold                   -> [B, N, W, D]
-          -> TCN                      -> z_bus, z_gen  [B, N, D]
-          -> expand to n steps        -> [B, N, n, D]
+          -> TCN sequence             -> z_bus_seq, z_gen_seq  [B, N, D, W]
+          -> Time Projection          -> z_bus_future [B, N, D, n]
+          -> transpose                -> [B, N, n, D]
           -> (optional) late fusion   -> [z || C_exo]
-          -> forecast MLP             -> y_bus [B, N_bus, n, 5], y_gen [B, N_gen, n, 1]
+          -> forecast MLP (per step)  -> y_bus [B, N, n, 5], y_gen [B, N, n, 1]
           -> bound Vm, Pg per step    -> final forecast
+    
     """
 
     def __init__(
@@ -242,6 +242,10 @@ class ST_GNN_heterogeneous(nn.Module):
             dropout=tcn_dropout,
         )
 
+        # temporal projection linear layers
+        self.time_proj_bus = nn.Linear(args.data.temporal_window, self.n)
+        self.time_proj_gen = nn.Linear(args.data.temporal_window, self.n)
+
 
         # ---- Forecast decoders ----
         # Direct multi-step decoding: maps D -> n * F
@@ -254,12 +258,8 @@ class ST_GNN_heterogeneous(nn.Module):
         mlp_num_layers = getattr(args.model, "mlp_num_layers", 1)
 
         def build_decoder(in_dim, out_dim):
-            layers = [
-                nn.Linear(in_dim, hidden_dim),
-                nn.LayerNorm(hidden_dim),
-                nn.LeakyReLU(),
-            ]
-            curr_dim = hidden_dim
+            layers = []
+            curr_dim = in_dim
             for _ in range(mlp_num_layers):
                 layers.extend([
                     nn.Linear(curr_dim, mlp_hidden_dim),
@@ -270,13 +270,10 @@ class ST_GNN_heterogeneous(nn.Module):
             layers.append(nn.Linear(curr_dim, out_dim))
             return nn.Sequential(*layers)
 
-        # Bus decoder: latent_dim (+ exo if used)
-        self.forecast_decoder_bus = build_decoder(
-            self.latent_dim + exo_bus_dim, self.forecast_bus_dim * self.n
-        )
-        # Gen decoder: latent_dim (+ exo if used)
+        # Bus/Gen decoder: latent_dim (+ exo if used)
+        self.forecast_decoder_bus = build_decoder(self.latent_dim + exo_bus_dim, self.forecast_bus_dim)
         self.forecast_decoder_gen = build_decoder(
-            self.latent_dim + exo_gen_d, self.forecast_gen_dim * self.n
+            self.latent_dim + exo_gen_d, self.forecast_gen_dim
         )
 
     # ------------------------------------------------------------------
@@ -322,23 +319,27 @@ class ST_GNN_heterogeneous(nn.Module):
         h_gen_4d = h_gen.view(B, W, N_gen, D).permute(0, 2, 1, 3)  # [B, N_gen, W, D]
 
         # ==============================================================
-        # 3. Temporal pass — TCN -> terminal state
+        # 3. Temporal pass — TCN -> gives sequence
         # ==============================================================
-        z_bus = self.tcn_bus(h_bus_4d)  # [B, N_bus, D]
-        z_gen = self.tcn_gen(h_gen_4d)  # [B, N_gen, D]
+        z_bus_seq = self.tcn_bus(h_bus_4d)  # [B, N_bus, D, W]
+        z_gen_seq = self.tcn_gen(h_gen_4d)  # [B, N_gen, D, W]
 
         if self.use_exogenous:
             pass # (Exogenous features skipped for direct decoding for now)
 
-        # ==============================================================
-        # 4. Forecast decoders — Direct multi-step decoding
-        # ==============================================================
-        forecast_bus_flat = self.forecast_decoder_bus(z_bus)  # [B, N_bus, n * 5]
-        forecast_gen_flat = self.forecast_decoder_gen(z_gen)  # [B, N_gen, n * 1]
-        
-        # Reshape the flat sequences into proper time dimension: [B, N, n, F]
-        forecast_bus = forecast_bus_flat.view(B, N_bus, n, self.forecast_bus_dim)
-        forecast_gen = forecast_gen_flat.view(B, N_gen, n, self.forecast_gen_dim)
+
+        # Time Projection: [B, N_bus, D, W] -> [B, N_bus, D, n]
+        z_bus_proj = self.time_proj_bus(z_bus_seq) 
+        z_gen_proj = self.time_proj_gen(z_gen_seq) 
+
+        # Transpose time & feature dims and ensure contiguous memory for TorchDynamo
+        # [B, N_bus, D, n] -> [B, N_bus, n, D]
+        z_bus_trans = z_bus_proj.permute(0, 1, 3, 2).contiguous()
+        z_gen_trans = z_gen_proj.permute(0, 1, 3, 2).contiguous()
+
+        # Feature Projection: [B, N_bus, n, D] -> [B, N_bus, n, F]
+        raw_forecast_bus = self.forecast_decoder_bus(z_bus_trans) 
+        raw_forecast_gen = self.forecast_decoder_gen(z_gen_trans) 
 
         # ==============================================================
         # 6. Bounds per step — Vm (sigmoid) and Pg (sigmoid)
@@ -354,19 +355,23 @@ class ST_GNN_heterogeneous(nn.Module):
 
         #  out-of-place ops (torch.cat / reassignment) instead of in-place index
         # assignment because in place leads to -> runtimeError (version-counter conflicts during backpropagation)
-        forecast_gen = bound_with_sigmoid(
-            forecast_gen[..., FORECAST_PG_IDX], min_pg, max_pg,
+        pg_bounded = bound_with_sigmoid(
+            raw_forecast_gen[..., FORECAST_PG_IDX], min_pg, max_pg,
         ).unsqueeze(-1)
+        final_forecast_gen = pg_bounded
+
         vm_bounded = bound_with_sigmoid(
-            forecast_bus[..., FORECAST_VM_IDX], min_vm, max_vm,
+            raw_forecast_bus[..., FORECAST_VM_IDX], min_vm, max_vm,
         ).unsqueeze(-1)
-        forecast_bus = torch.cat([
-            forecast_bus[..., :FORECAST_VM_IDX],
+        final_forecast_bus = torch.cat([
+            raw_forecast_bus[..., :FORECAST_VM_IDX],
             vm_bounded,
-            forecast_bus[..., FORECAST_VM_IDX + 1:],
+            raw_forecast_bus[..., FORECAST_VM_IDX + 1:],
         ], dim=-1)
 
+        if torch._dynamo.is_compiling():
+            return final_forecast_bus, final_forecast_gen
         return {
-            "bus": forecast_bus,  # [B, N_bus, n, 5]: [Pd, Qd, Qg, Vm, Va]
-            "gen": forecast_gen,  # [B, N_gen, n, 1]: [Pg]
+            "bus": final_forecast_bus,  # [B, N_bus, n, 5]: [Pd, Qd, Qg, Vm, Va]
+            "gen": final_forecast_gen,  # [B, N_gen, n, 1]: [Pg]
         }
