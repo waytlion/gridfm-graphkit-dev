@@ -104,6 +104,12 @@ def main_cli(args):
     if args.command != "train":
         print(f"Loading model weights from {args.model_path}")
         state_dict = torch.load(args.model_path, map_location="cpu")
+        # Following is neccessary, if train was run with precompile .. -> Handle torch.compile checkpoints that save parameters under model._orig_mod.*
+        if any(key.startswith("model._orig_mod.") for key in state_dict.keys()):
+            state_dict = {
+                key.replace("model._orig_mod.", "model.", 1): value
+                for key, value in state_dict.items()
+            }
         model.load_state_dict(state_dict)
         
     precision = "bf16-true" if getattr(args, "bfloat16", False) else None
@@ -121,7 +127,7 @@ def main_cli(args):
 
             inductor_cfg.max_autotune_gemm_backends = "ATEN,TRITON"
         print(f"Compiling model with torch.compile(mode='{compile_mode}')")
-        model.model = torch.compile(model.model, mode=compile_mode, dynamic=True)
+        model.model = torch.compile(model.model, mode=compile_mode, dynamic=False)
 
     trainer_kwargs = {}
     if precision:
