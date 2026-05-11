@@ -74,7 +74,8 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         Returns (total_loss, log_dict)
         """
         pred = self(batch)
-
+        if isinstance(pred, tuple):
+            pred = {"bus": pred[0], "gen": pred[1]}
         # --- Construct target dict [B, N_bus, n, F] from target_batch ---
         target_batch = batch["target_batch"]
         B = batch["B"]

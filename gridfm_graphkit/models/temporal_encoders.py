@@ -101,7 +101,7 @@ class TCN(nn.Module):
     Hidden dimension is kept constant at input_dim across all layers.
 
     Input:  [B, N_nodes, W, D_in]   (unfolded spatial latent sequence)
-    Output: [B, N_nodes, D_in]      (terminal state vector at t)
+    Output: [B, N_nodes, D_in, W]   (full temporal sequence)
     """
 
     def __init__(
@@ -153,7 +153,7 @@ class TCN(nn.Module):
         """
         h_4d: [B, N_nodes, W, D_in] (unfolded spatial latent sequence)
 
-        Returns: [B, N_nodes, D_in] (terminal state = forecast embedding)
+        Returns: [B, N_nodes, D_in, W] (full temporal sequence)
         """
         B, N_nodes, W, D_in = h_4d.shape
 
@@ -161,10 +161,10 @@ class TCN(nn.Module):
         x = h_4d.reshape(B * N_nodes, W, D_in).permute(0, 2, 1)  # [B*N, D, W]
 
         # Causal temporal convolutions
-        y = self.network(x)  # [B*N, D_out, W]
+        y = self.network(x)  # [B*N, D_in, W]
 
-        # Extract terminal state (last timestep)
-        z = y[:, :, -1]  # [B*N, D_out]
-
-        # Restore batch and node dims
-        return z.view(B, N_nodes, -1)  # [B, N_nodes, D_out]
+        # Return whole sequence: Shape [B, N_nodes, D_out, W]
+        # (Since hidden dimension is kept constant, D_out == D_in)
+        return y.view(B, N_nodes, D_in, W)  
+        # return only last terminal state of TCN output -> Restore batch and node dims
+        #return z.view(B, N_nodes, -1)  # [B, N_nodes, D_out]
