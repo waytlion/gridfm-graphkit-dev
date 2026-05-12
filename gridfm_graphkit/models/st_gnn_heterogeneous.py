@@ -63,7 +63,7 @@ class UnmaskedSpatialEncoder(nn.Module):
         self.edge_dim = args.model.edge_dim
         self.heads = args.model.attention_head
         self.dropout = getattr(args.model, "dropout", 0.0)
-
+        self.alpha_init_res = getattr(args.model, "alpha_init_res", 0.0)
         self.latent_dim = self.hidden_dim * self.heads  # final embedding dim
 
         # --- Input projections (identical to GNS_heterogeneous) ---
@@ -143,6 +143,10 @@ class UnmaskedSpatialEncoder(nn.Module):
         # Project inputs
         h_bus = self.input_proj_bus(x_dict["bus"])
         h_gen = self.input_proj_gen(x_dict["gen"])
+        
+        # Save initial embeddings for initial residual implementation
+        h0_bus = None
+        h0_gen = None
 
         edge_attr_proj_dict = {}
         for key, edge_attr in edge_attr_dict.items():
@@ -168,6 +172,15 @@ class UnmaskedSpatialEncoder(nn.Module):
             h_bus = h_bus + out_bus if out_bus.shape == h_bus.shape else out_bus
             h_gen = h_gen + out_gen if out_gen.shape == h_gen.shape else out_gen
 
+            # Initialize H^(0) after first layer (matches latent_dim)
+            if h0_bus is None:
+                h0_bus = h_bus
+                h0_gen = h_gen
+            # initial residuals: inject H^(0)
+            if self.alpha_init_res != 0.0:
+                h_bus = (1.0 - self.alpha_init_res) * h_bus + self.alpha_init_res * h0_bus
+                h_gen = (1.0 - self.alpha_init_res) * h_gen + self.alpha_init_res * h0_gen
+        
         return h_bus, h_gen
 
 
@@ -263,8 +276,13 @@ class ST_GNN_heterogeneous(nn.Module):
         self.exo_bus_indices = exo_bus_indices or DEFAULT_EXO_BUS_INDICES
         self.exo_gen_dim = exo_gen_dim
         self.n = args.data.forecast_horizon  # number of output steps
+        self.step_embed_dim = getattr(args.model, "step_embed_dim", 0)
         self.temporal_decoder = getattr(args.model, "temporal_decoder", "cross_attention")
-
+        
+        # Step embeddings default to 0 -> should not break the model
+        self.step_embeddings = None
+        if self.step_embed_dim > 0:
+            self.step_embeddings = nn.Embedding(self.n, self.step_embed_dim)
         # ---- Spatial encoder ----
         self.spatial_encoder = UnmaskedSpatialEncoder(args)
 
@@ -332,12 +350,11 @@ class ST_GNN_heterogeneous(nn.Module):
             layers.append(nn.Linear(curr_dim, out_dim))
             return nn.Sequential(*layers)
 
-        # Bus/Gen decoder: latent_dim (+ exo if used)
-        self.forecast_decoder_bus = build_decoder(self.latent_dim + exo_bus_dim, self.forecast_bus_dim)
-        self.forecast_decoder_gen = build_decoder(
-            self.latent_dim + exo_gen_d, self.forecast_gen_dim
-        )
-
+        # Bus/Gen decoder: latent_dim + step_embed_dim (+ exo if used)
+        bus_decoder_in = self.latent_dim + self.step_embed_dim + exo_bus_dim
+        gen_decoder_in = self.latent_dim + self.step_embed_dim + exo_gen_d
+        self.forecast_decoder_bus = build_decoder(bus_decoder_in, self.forecast_bus_dim)
+        self.forecast_decoder_gen = build_decoder(gen_decoder_in, self.forecast_gen_dim)
     # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
@@ -398,9 +415,22 @@ class ST_GNN_heterogeneous(nn.Module):
             z_bus_trans = self.time_proj_bus(z_bus_seq).permute(0, 1, 3, 2)
             z_gen_trans = self.time_proj_gen(z_gen_seq).permute(0, 1, 3, 2)
 
-        # Feature Projection: [B, N_bus, n, D] -> [B, N_bus, n, F]
-        raw_forecast_bus = self.forecast_decoder_bus(z_bus_trans) 
-        raw_forecast_gen = self.forecast_decoder_gen(z_gen_trans) 
+        # prepare conditioned inputs (concat step-emb only if enabled)
+        if self.step_embed_dim > 0 and self.step_embeddings is not None:
+            step_idx = torch.arange(n, device=z_bus_trans.device)
+            step_emb = self.step_embeddings(step_idx)                      # [n, d_s]
+
+            step_emb_bus = step_emb.unsqueeze(0).unsqueeze(0).expand(B, N_bus, n, self.step_embed_dim)
+            z_bus_cond = torch.cat([z_bus_trans, step_emb_bus], dim=-1)    # [B, N_bus, n, D + d_s]
+
+            step_emb_gen = step_emb.unsqueeze(0).unsqueeze(0).expand(B, N_gen, n, self.step_embed_dim)
+            z_gen_cond = torch.cat([z_gen_trans, step_emb_gen], dim=-1)    # [B, N_gen, n, D + d_s]
+        else:
+            z_bus_cond = z_bus_trans
+            z_gen_cond = z_gen_trans
+
+        raw_forecast_bus = self.forecast_decoder_bus(z_bus_cond)
+        raw_forecast_gen = self.forecast_decoder_gen(z_gen_cond)
 
         # ==============================================================
         # 6. Bounds per step — Vm (sigmoid) and Pg (sigmoid)
