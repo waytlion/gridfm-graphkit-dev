@@ -171,6 +171,58 @@ class UnmaskedSpatialEncoder(nn.Module):
         return h_bus, h_gen
 
 
+class CrossAttentionTimeDecoder(nn.Module):
+    """
+    Replaces Linear(W, n) time projection with learnable-query cross-attention.
+    Query = learnable horizon positional embeddings (E_future) shifted by a
+    dynamic context vector derived from the terminal TCN state h_W.
+    Uses Pre-LN formulation with a residual that bypasses both LayerNorm
+    and attention, giving E_future a direct gradient flow to the loss.
+    Args:
+        latent_dim:  D — must be divisible by num_heads
+        horizon:     n — number of forecast steps
+        num_heads:   temporal_decoder_heads (config)
+        dropout:     attention dropout
+    """
+    def __init__(self, latent_dim: int, horizon: int, num_heads: int, dropout: float = 0.0):
+        super().__init__()
+        self.horizon = horizon
+        # Learnable positional baseline for each future step: [1, n, D]
+        self.E_future = nn.Parameter(torch.empty(1, horizon, latent_dim))
+        nn.init.trunc_normal_(self.E_future, std=0.02)
+        # Projects terminal TCN state -> dynamic context shift [B*N, 1, D]
+        self.context_proj = nn.Linear(latent_dim, latent_dim)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=latent_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        # Pre-LN: normalise query before attention, not after
+        self.norm_q = nn.LayerNorm(latent_dim)
+    def forward(self, z_seq: torch.Tensor) -> torch.Tensor:
+        """
+        z_seq: [B, N, D, W]  — TCN output (features-first, time-last)
+        returns: [B, N, n, D]
+        """
+        B, N, D, W = z_seq.shape
+        # --- K and V: full TCN sequence [B*N, W, D] ---
+        kv = z_seq.permute(0, 1, 3, 2).contiguous().reshape(B * N, W, D)
+        # --- Dynamic context from terminal TCN state h_W ---
+        # z_seq[:, :, :, -1] -> [B, N, D] -> [B*N, D]
+        terminal_state = z_seq[:, :, :, -1].contiguous().reshape(B * N, D)
+        # Project and broadcast across all n horizon steps: [B*N, 1, D]
+        context = self.context_proj(terminal_state).unsqueeze(1)
+        # --- Query: positional baseline + dynamic shift ---
+        # q_base: [1, n, D] -> expand [B*N, n, D] (view, no copy)
+        # q:      [B*N, n, D]  (materialised by the addition)
+        q = self.E_future.expand(B * N, -1, -1) + context
+        # --- Pre-LN cross-attention ---
+        # Normalise query before attention; residual bypasses both norm and attn
+        attn_out, _ = self.cross_attn(self.norm_q(q), kv, kv)  # [B*N, n, D]
+        out = q + attn_out                                       # [B*N, n, D]
+        return out.reshape(B, N, self.horizon, D)
+
 # ======================================================================
 # 2. ST-GNN End-to-End Forecaster
 # ======================================================================
@@ -211,6 +263,7 @@ class ST_GNN_heterogeneous(nn.Module):
         self.exo_bus_indices = exo_bus_indices or DEFAULT_EXO_BUS_INDICES
         self.exo_gen_dim = exo_gen_dim
         self.n = args.data.forecast_horizon  # number of output steps
+        self.temporal_decoder = getattr(args.model, "temporal_decoder", "cross_attention")
 
         # ---- Spatial encoder ----
         self.spatial_encoder = UnmaskedSpatialEncoder(args)
@@ -242,9 +295,18 @@ class ST_GNN_heterogeneous(nn.Module):
             dropout=tcn_dropout,
         )
 
-        # temporal projection linear layers
-        self.time_proj_bus = nn.Linear(args.data.temporal_window, self.n)
-        self.time_proj_gen = nn.Linear(args.data.temporal_window, self.n)
+        # ---- Temporal decoder ----
+        if self.temporal_decoder == "cross_attention":
+            decoder_heads = args.model.temporal_decoder_heads
+            assert self.latent_dim % decoder_heads == 0, (
+                f"latent_dim ({self.latent_dim}) must be divisible by "
+                f"temporal_decoder_heads ({decoder_heads})"
+            )
+            self.time_attn_bus = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, tcn_dropout)
+            self.time_attn_gen = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, tcn_dropout)
+        else:
+            self.time_proj_bus = nn.Linear(temporal_window, self.n)
+            self.time_proj_gen = nn.Linear(temporal_window, self.n)
 
 
         # ---- Forecast decoders ----
@@ -328,14 +390,13 @@ class ST_GNN_heterogeneous(nn.Module):
             pass # (Exogenous features skipped for direct decoding for now)
 
 
-        # Time Projection: [B, N_bus, D, W] -> [B, N_bus, D, n]
-        z_bus_proj = self.time_proj_bus(z_bus_seq) 
-        z_gen_proj = self.time_proj_gen(z_gen_seq) 
-
-        # Transpose time & feature dims and ensure contiguous memory for TorchDynamo
-        # [B, N_bus, D, n] -> [B, N_bus, n, D]
-        z_bus_trans = z_bus_proj.permute(0, 1, 3, 2).contiguous()
-        z_gen_trans = z_gen_proj.permute(0, 1, 3, 2).contiguous()
+        # Time decoding: [B, N, D, W] -> [B, N, n, D]
+        if self.temporal_decoder == "cross_attention":
+            z_bus_trans = self.time_attn_bus(z_bus_seq)
+            z_gen_trans = self.time_attn_gen(z_gen_seq)
+        else:
+            z_bus_trans = self.time_proj_bus(z_bus_seq).permute(0, 1, 3, 2)
+            z_gen_trans = self.time_proj_gen(z_gen_seq).permute(0, 1, 3, 2)
 
         # Feature Projection: [B, N_bus, n, D] -> [B, N_bus, n, F]
         raw_forecast_bus = self.forecast_decoder_bus(z_bus_trans) 
