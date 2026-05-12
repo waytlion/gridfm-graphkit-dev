@@ -21,6 +21,7 @@ model:
   type: ST_GNN_heterogeneous
   # Spatial encoder (mirrors GNS_heterogeneous architecture)
   attention_head: 8 
+  temporal_decoder_heads: 2
   edge_dim: 10
   hidden_size: 48 #!
   input_bus_dim: 15
