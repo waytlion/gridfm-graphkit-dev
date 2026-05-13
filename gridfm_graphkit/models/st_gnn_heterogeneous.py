@@ -1,10 +1,10 @@
 """
-Standalone Spatio-Temporal GNN for MP-ACOPF forecasting.
+Standalone Spatio-Temporal GNN for ACOPF forecasting
 
 Contains two classes:
-    1. UnmaskedSpatialEncoder - spatial backbone (no physics/MLPs)
+    1. UnmaskedSpatialEncoder - spatial backbone (GNN)
     2. ST_GNN_heterogeneous   - end-to-end forecaster composing spatial encoder,
-                                temporal TCN, optional late fusion, and forecast decoders
+                                temporal encoder (TCN/transformer) and forecast decoders
 
 The spatial encoder mirrors the TransformerConv layers of GNS_heterogeneous
 but strips away masking, physics decoders, and per-layer MLP decoding.
@@ -16,14 +16,12 @@ from torch_geometric.nn import HeteroConv, TransformerConv
 
 from gridfm_graphkit.io.registries import MODELS_REGISTRY
 from gridfm_graphkit.models.utils import bound_with_sigmoid
-from gridfm_graphkit.models.temporal_encoders import TCN
+from gridfm_graphkit.models.temporal_encoders import TCN, TemporalTransformerEncoder
 from gridfm_graphkit.datasets.globals import (
     PD_H, QD_H,
     MIN_VM_H, MAX_VM_H,
     MIN_PG, MAX_PG,
 )
-
-
 
 # Forecast output indices (5-dim bus: [Pd, Qd, Qg, Vm, Va])
 FORECAST_VM_IDX = 3
@@ -33,24 +31,18 @@ FORECAST_PG_IDX = 0
 DEFAULT_EXO_BUS_INDICES = [PD_H, QD_H]
 
 
-# ======================================================================
-# 1. Unmasked Spatial Encoder
-# ======================================================================
-
 class UnmaskedSpatialEncoder(nn.Module):
     """
-    Lightweight spatial backbone mirroring GNS_heterogeneous but stripped
+    spatial backbone mirroring GNS_heterogeneous but stripped
     of all physics decoders, per-layer MLPs, and masking logic.
 
-    Accepts fully observable x_dict (all features known for historical
-    timesteps) and produces latent embeddings h_bus and h_gen.
-
-    Architecture matches GNS_heterogeneous conv layers exactly:
+    Architecture (matches GNS_heterogeneous conv layers):
         - input_proj_{bus,gen,edge}: 2-layer MLP + LayerNorm
         - HeteroConv(TransformerConv) per relation, with skip connections
         - LayerNorm per node type per layer
 
-    This allows weight transfer from a pretrained GNS_heterogeneous checkpoint.
+    Input: x_dict (all features known for historical timesteps)
+    Output: latent embeddings h_bus and h_gen
     """
 
     def __init__(self, args):
@@ -63,24 +55,22 @@ class UnmaskedSpatialEncoder(nn.Module):
         self.edge_dim = args.model.edge_dim
         self.heads = args.model.attention_head
         self.dropout = getattr(args.model, "dropout", 0.0)
-        self.alpha_init_res = getattr(args.model, "alpha_init_res", 0.0)
-        self.latent_dim = self.hidden_dim * self.heads  # final embedding dim
+        self.alpha_init_res = getattr(args.model, "alpha_init_res", 0.0)# default 0 == no initial residuals
+        self.latent_dim = self.hidden_dim * self.heads 
 
-        # --- Input projections (identical to GNS_heterogeneous) ---
+        # --- Input proj ---    
         self.input_proj_bus = nn.Sequential(
             nn.Linear(self.input_bus_dim, self.hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(self.hidden_dim, self.hidden_dim),
             nn.LayerNorm(self.hidden_dim),
         )
-
         self.input_proj_gen = nn.Sequential(
             nn.Linear(self.input_gen_dim, self.hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(self.hidden_dim, self.hidden_dim),
             nn.LayerNorm(self.hidden_dim),
         )
-
         self.input_proj_edge = nn.Sequential(
             nn.Linear(self.edge_dim, self.hidden_dim),
             nn.LeakyReLU(),
@@ -88,11 +78,10 @@ class UnmaskedSpatialEncoder(nn.Module):
             nn.LayerNorm(self.hidden_dim),
         )
 
-        # --- HeteroConv layers (identical to GNS_heterogeneous) ---
+        # --- HeteroConv layers  ---
         self.layers = nn.ModuleList()
         self.norms_bus = nn.ModuleList()
         self.norms_gen = nn.ModuleList()
-
         self.activation = nn.LeakyReLU()
 
         for i in range(self.num_layers):
@@ -129,8 +118,7 @@ class UnmaskedSpatialEncoder(nn.Module):
 
     def forward(self, x_dict, edge_index_dict, edge_attr_dict):
         """
-        Spatial message-passing on fully observable heterogeneous graphs.
-        No masking, no physics, no MLP decoding.
+        Spatial message-passing on fully observable heterogeneous graphs (No masking, no physics, no MLP decoding)
 
         x_dict: {"bus": [N_bus, F_bus], "gen": [N_gen, F_gen]}
         edge_index_dict: relation-keyed edge indices
@@ -144,16 +132,16 @@ class UnmaskedSpatialEncoder(nn.Module):
         h_bus = self.input_proj_bus(x_dict["bus"])
         h_gen = self.input_proj_gen(x_dict["gen"])
         
-        # Save initial embeddings for initial residual implementation
-        h0_bus = None
-        h0_gen = None
-
         edge_attr_proj_dict = {}
         for key, edge_attr in edge_attr_dict.items():
             if edge_attr is not None:
                 edge_attr_proj_dict[key] = self.input_proj_edge(edge_attr)
             else:
                 edge_attr_proj_dict[key] = None
+
+        # for initial residual implementation later on
+        h0_bus = None
+        h0_gen = None
 
         # Message-passing layers with skip connections
         for i, conv in enumerate(self.layers):
@@ -168,11 +156,11 @@ class UnmaskedSpatialEncoder(nn.Module):
             out_bus = self.activation(self.norms_bus[i](out_bus))
             out_gen = self.activation(self.norms_gen[i](out_gen))
 
-            # Skip connection (first layer may change dim: hidden_dim -> hidden_dim * heads)
+            # Skip connection (first layer changes dim: hidden_dim -> hidden_dim * heads)
             h_bus = h_bus + out_bus if out_bus.shape == h_bus.shape else out_bus
             h_gen = h_gen + out_gen if out_gen.shape == h_gen.shape else out_gen
 
-            # Initialize H^(0) after first layer (matches latent_dim)
+            # Initialize H^(0) after first layer for initial residuals
             if h0_bus is None:
                 h0_bus = h_bus
                 h0_gen = h_gen
@@ -186,24 +174,24 @@ class UnmaskedSpatialEncoder(nn.Module):
 
 class CrossAttentionTimeDecoder(nn.Module):
     """
-    Replaces Linear(W, n) time projection with learnable-query cross-attention.
-    Query = learnable horizon positional embeddings (E_future) shifted by a
-    dynamic context vector derived from the terminal TCN state h_W.
-    Uses Pre-LN formulation with a residual that bypasses both LayerNorm
-    and attention, giving E_future a direct gradient flow to the loss.
-    Args:
-        latent_dim:  D — must be divisible by num_heads
-        horizon:     n — number of forecast steps
-        num_heads:   temporal_decoder_heads (config)
-        dropout:     attention dropout
+    Temporal Decoder: Maps input window W to prediction horizon n
+        - Input: [B, N, D, W] 
+        - return: [B, N, n, D]
+    
+    #! Notes:
+        - TCN Base model performed worse with this decoder than with the linear decoder on all metrics 
+
+    Architecture:
+        - learnable-query cross-attention
+        - Query = learnable horizon positional embeddings (E_future) shifted by a context vector, which is the terminal TCN state
+            - E_future: Learnable embeddings for each horizon step: [1, n, D] (shortcut to encode horizon-dependent structure early in training - mby useless but prob not a problem)
+            - Context: only useful for TCN i believe: context == last TCN state
     """
     def __init__(self, latent_dim: int, horizon: int, num_heads: int, dropout: float = 0.0):
         super().__init__()
         self.horizon = horizon
-        # Learnable positional baseline for each future step: [1, n, D]
         self.E_future = nn.Parameter(torch.empty(1, horizon, latent_dim))
         nn.init.trunc_normal_(self.E_future, std=0.02)
-        # Projects terminal TCN state -> dynamic context shift [B*N, 1, D]
         self.context_proj = nn.Linear(latent_dim, latent_dim)
         self.cross_attn = nn.MultiheadAttention(
             embed_dim=latent_dim,
@@ -211,56 +199,41 @@ class CrossAttentionTimeDecoder(nn.Module):
             dropout=dropout,
             batch_first=True,
         )
-        # Pre-LN: normalise query before attention, not after
-        self.norm_q = nn.LayerNorm(latent_dim)
+        self.norm_q = nn.LayerNorm(latent_dim) 
+
     def forward(self, z_seq: torch.Tensor) -> torch.Tensor:
+        """ z_seq: input from temporal encoder
         """
-        z_seq: [B, N, D, W]  — TCN output (features-first, time-last)
-        returns: [B, N, n, D]
-        """
-        B, N, D, W = z_seq.shape
-        # --- K and V: full TCN sequence [B*N, W, D] ---
-        kv = z_seq.permute(0, 1, 3, 2).contiguous().reshape(B * N, W, D)
-        # --- Dynamic context from terminal TCN state h_W ---
-        # z_seq[:, :, :, -1] -> [B, N, D] -> [B*N, D]
-        terminal_state = z_seq[:, :, :, -1].contiguous().reshape(B * N, D)
-        # Project and broadcast across all n horizon steps: [B*N, 1, D]
-        context = self.context_proj(terminal_state).unsqueeze(1)
-        # --- Query: positional baseline + dynamic shift ---
-        # q_base: [1, n, D] -> expand [B*N, n, D] (view, no copy)
-        # q:      [B*N, n, D]  (materialised by the addition)
-        q = self.E_future.expand(B * N, -1, -1) + context
-        # --- Pre-LN cross-attention ---
-        # Normalise query before attention; residual bypasses both norm and attn
-        attn_out, _ = self.cross_attn(self.norm_q(q), kv, kv)  # [B*N, n, D]
+        B, N, D, W = z_seq.shape 
+        kv = z_seq.permute(0, 1, 3, 2).contiguous().reshape(B * N, W, D)  
+        terminal_state = z_seq[:, :, :, -1].contiguous().reshape(B * N, D) 
+        context = self.context_proj(terminal_state).unsqueeze(1) # [B*N, n, D]
+        q = self.E_future.expand(B * N, -1, -1) + context # q_base: [1, n, D] -> expand [B*N, n, D]
+        attn_out, _ = self.cross_attn(self.norm_q(q), kv, kv)  # Pre-LN cross-attention
         out = q + attn_out                                       # [B*N, n, D]
         return out.reshape(B, N, self.horizon, D)
 
-# ======================================================================
-# 2. ST-GNN End-to-End Forecaster
-# ======================================================================
 
 @MODELS_REGISTRY.register("ST_GNN_heterogeneous")
 class ST_GNN_heterogeneous(nn.Module):
     """
-    Space-then-Time heterogeneous GNN for MP-ACOPF forecasting.
+    Space-then-Time heterogeneous GNN for MP-ACOPF forecasting
 
     End-to-end model: predicts exogenous loads AND optimal dispatch
-    at the target horizon.
+    at the target horizon
 
     Bus output (5 features): [Pd, Qd, Qg, Vm, Va]
     Gen output (1 feature):  [Pg]
 
     Pipeline:
         folded_batch [B*W graphs]
-          -> UnmaskedSpatialEncoder   -> h_bus, h_gen
-          -> unfold                   -> [B, N, W, D]
-          -> TCN sequence             -> z_bus_seq, z_gen_seq  [B, N, D, W]
-          -> Time Projection          -> z_bus_future [B, N, D, n]
-          -> transpose                -> [B, N, n, D]
-          -> (optional) late fusion   -> [z || C_exo]
-          -> forecast MLP (per step)  -> y_bus [B, N, n, 5], y_gen [B, N, n, 1]
-          -> bound Vm, Pg per step    -> final forecast
+          -> UnmaskedSpatialEncoder              -> h_bus, h_gen
+          -> unfold                              -> [B, N, W, D]
+          -> Temporal encoder (TCN/transformer)  -> z_bus_seq, z_gen_seq  [B, N, D, W]
+          -> Time Projection (Linear/Attn)       -> z_bus_trans, z_gen_trans [B, N, n, D]
+          -> Condition (step embeddings)         -> z_bus_cond [B, N, n, D_cond]
+          -> forecast MLP (per step shared)      -> y_bus [B, N, n, 5], y_gen [B, N, n, 1]
+          -> bound Vm, Pg per step               -> final forecast
     
     """
 
@@ -277,7 +250,7 @@ class ST_GNN_heterogeneous(nn.Module):
         self.exo_gen_dim = exo_gen_dim
         self.n = args.data.forecast_horizon  # number of output steps
         self.step_embed_dim = getattr(args.model, "step_embed_dim", 0)
-        self.temporal_decoder = getattr(args.model, "temporal_decoder", "cross_attention")
+        self.temporal_decoder = getattr(args.model, "temporal_decoder", "linear")
         
         # Step embeddings default to 0 -> should not break the model
         self.step_embeddings = None
@@ -294,24 +267,50 @@ class ST_GNN_heterogeneous(nn.Module):
         self.forecast_bus_dim = args.model.output_bus_dim  # [Pd, Qd, Qg, Vm, Va]
         self.forecast_gen_dim = args.model.output_gen_dim  # [Pg]
 
-        # ---- Temporal encoders ----
+        # ---- Temporal encoders (pluggable: tcn | transformer) ----
         temporal_window = args.data.temporal_window
-        tcn_kernel = getattr(args.model, "tcn_kernel_size", 3)
-        tcn_dropout = getattr(args.model, "dropout", 0.0)
+        temporal_dropout = getattr(args.model, "dropout", 0.0)
+        self.temporal_encoder_type = getattr(args.model, "temporal_encoder", "tcn")
 
-        self.tcn_bus = TCN(
-            input_dim=self.latent_dim,
-            window_size=temporal_window,
-            kernel_size=tcn_kernel,
-            dropout=tcn_dropout,
-        )
-
-        self.tcn_gen = TCN(
-            input_dim=self.latent_dim,
-            window_size=temporal_window,
-            kernel_size=tcn_kernel,
-            dropout=tcn_dropout,
-        )
+        if self.temporal_encoder_type == "tcn":
+            tcn_kernel = getattr(args.model, "tcn_kernel_size", 3)
+            self.temporal_bus = TCN(
+                input_dim=self.latent_dim,
+                window_size=temporal_window,
+                kernel_size=tcn_kernel,
+                dropout=temporal_dropout,
+            )
+            self.temporal_gen = TCN(
+                input_dim=self.latent_dim,
+                window_size=temporal_window,
+                kernel_size=tcn_kernel,
+                dropout=temporal_dropout,
+            )
+        elif self.temporal_encoder_type == "transformer":
+            t_layers = getattr(args.model, "temporal_num_layers", 4)
+            t_heads = getattr(args.model, "temporal_num_heads", 8)
+            t_ff = 4 * self.latent_dim
+            self.temporal_bus = TemporalTransformerEncoder(
+                input_dim=self.latent_dim,
+                window_size=temporal_window,
+                num_layers=t_layers,
+                num_heads=t_heads,
+                dim_feedforward=t_ff,
+                dropout=temporal_dropout,
+            )
+            self.temporal_gen = TemporalTransformerEncoder(
+                input_dim=self.latent_dim,
+                window_size=temporal_window,
+                num_layers=t_layers,
+                num_heads=t_heads,
+                dim_feedforward=t_ff,
+                dropout=temporal_dropout,
+            )
+        else:
+            raise ValueError(
+                f"Unknown temporal_encoder type: '{self.temporal_encoder_type}'. "
+                f"Must be 'tcn' or 'transformer'."
+            )
 
         # ---- Temporal decoder ----
         if self.temporal_decoder == "cross_attention":
@@ -320,22 +319,19 @@ class ST_GNN_heterogeneous(nn.Module):
                 f"latent_dim ({self.latent_dim}) must be divisible by "
                 f"temporal_decoder_heads ({decoder_heads})"
             )
-            self.time_attn_bus = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, tcn_dropout)
-            self.time_attn_gen = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, tcn_dropout)
+            self.time_attn_bus = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, temporal_dropout)
+            self.time_attn_gen = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, temporal_dropout)
         else:
             self.time_proj_bus = nn.Linear(temporal_window, self.n)
             self.time_proj_gen = nn.Linear(temporal_window, self.n)
 
 
         # ---- Forecast decoders ----
-        # Direct multi-step decoding: maps D -> n * F
-        # Bus decoder receives z_bus [B, N_bus, D] concatenated with
-        # standardized Pd_macro [B, N_bus, 1] -> input dim = D + PD_MACRO_DIM
-        exo_bus_dim = len(self.exo_bus_indices) if self.use_exogenous else 0
-        exo_gen_d = self.exo_gen_dim if self.use_exogenous else 0
-
-        mlp_hidden_dim = getattr(args.model, "mlp_hidden_dim", 1024)
-        mlp_num_layers = getattr(args.model, "mlp_num_layers", 1)
+        # Feature decoding (per step): maps D -> F
+        # Bus decoder receives z_bus [B, N_bus, n, D] concatenated with step embeddings
++
+        mlp_hidden_dim = args.model.mlp_hidden_dim
+        mlp_num_layers = args.model.mlp_num_layers
 
         def build_decoder(in_dim, out_dim):
             layers = []
@@ -350,21 +346,15 @@ class ST_GNN_heterogeneous(nn.Module):
             layers.append(nn.Linear(curr_dim, out_dim))
             return nn.Sequential(*layers)
 
-        # Bus/Gen decoder: latent_dim + step_embed_dim (+ exo if used)
-        bus_decoder_in = self.latent_dim + self.step_embed_dim + exo_bus_dim
-        gen_decoder_in = self.latent_dim + self.step_embed_dim + exo_gen_d
+        bus_decoder_in = self.latent_dim + self.step_embed_dim 
+        gen_decoder_in = self.latent_dim + self.step_embed_dim 
         self.forecast_decoder_bus = build_decoder(bus_decoder_in, self.forecast_bus_dim)
         self.forecast_decoder_gen = build_decoder(gen_decoder_in, self.forecast_gen_dim)
-    # ------------------------------------------------------------------
-    # Forward
-    # ------------------------------------------------------------------
 
     def forward(self, folded_batch, target_batch, B, W, N_bus):
         """
-        Space-then-Time forward pass.
-
         folded_batch: PyG Batch of B*W window graphs
-        target_batch: PyG Batch of B*n target graphs (exo features + bounds)
+        target_batch: PyG Batch of B*n target graphs 
         B: batch size
         W: temporal window size
         N_bus: number of bus nodes per graph
@@ -377,37 +367,24 @@ class ST_GNN_heterogeneous(nn.Module):
         D = self.latent_dim
         n = self.n
 
-        # ==============================================================
-        # 1. Spatial pass — unmasked message-passing on B*W graphs
-        # ==============================================================
+        # spatial pass
         h_bus, h_gen = self.spatial_encoder(
             folded_batch.x_dict,
             folded_batch.edge_index_dict,
             folded_batch.edge_attr_dict,
-        )
-        # h_bus: [B*W*N_bus, D]    h_gen: [B*W*N_gen, D]
+        ) # h_bus: [B*W*N_bus, D]    h_gen: [B*W*N_gen, D]
 
         N_gen = h_gen.size(0) // (B * W)
 
-        # ==============================================================
-        # 2. Unfold to [B, N, W, D]
-        # ==============================================================
-        # collate_temporal uses sample-major, time-minor ordering
-        # -> view(B, W, N, D) is valid, then permute to [B, N, W, D]
+        # unfold
         h_bus_4d = h_bus.view(B, W, N_bus, D).permute(0, 2, 1, 3)  # [B, N_bus, W, D]
         h_gen_4d = h_gen.view(B, W, N_gen, D).permute(0, 2, 1, 3)  # [B, N_gen, W, D]
 
-        # ==============================================================
-        # 3. Temporal pass — TCN -> gives sequence
-        # ==============================================================
-        z_bus_seq = self.tcn_bus(h_bus_4d)  # [B, N_bus, D, W]
-        z_gen_seq = self.tcn_gen(h_gen_4d)  # [B, N_gen, D, W]
+        # temporal encoder 
+        z_bus_seq = self.temporal_bus(h_bus_4d)  # [B, N_bus, D, W]
+        z_gen_seq = self.temporal_gen(h_gen_4d)  # [B, N_gen, D, W]
 
-        if self.use_exogenous:
-            pass # (Exogenous features skipped for direct decoding for now)
-
-
-        # Time decoding: [B, N, D, W] -> [B, N, n, D]
+        # temporal decoder [B, N, D, W] -> [B, N, n, D]
         if self.temporal_decoder == "cross_attention":
             z_bus_trans = self.time_attn_bus(z_bus_seq)
             z_gen_trans = self.time_attn_gen(z_gen_seq)
@@ -415,14 +392,12 @@ class ST_GNN_heterogeneous(nn.Module):
             z_bus_trans = self.time_proj_bus(z_bus_seq).permute(0, 1, 3, 2)
             z_gen_trans = self.time_proj_gen(z_gen_seq).permute(0, 1, 3, 2)
 
-        # prepare conditioned inputs (concat step-emb only if enabled)
+        # forecast deocder (optionally concat step-embbeding per horizon step)
         if self.step_embed_dim > 0 and self.step_embeddings is not None:
             step_idx = torch.arange(n, device=z_bus_trans.device)
             step_emb = self.step_embeddings(step_idx)                      # [n, d_s]
-
             step_emb_bus = step_emb.unsqueeze(0).unsqueeze(0).expand(B, N_bus, n, self.step_embed_dim)
             z_bus_cond = torch.cat([z_bus_trans, step_emb_bus], dim=-1)    # [B, N_bus, n, D + d_s]
-
             step_emb_gen = step_emb.unsqueeze(0).unsqueeze(0).expand(B, N_gen, n, self.step_embed_dim)
             z_gen_cond = torch.cat([z_gen_trans, step_emb_gen], dim=-1)    # [B, N_gen, n, D + d_s]
         else:
@@ -432,20 +407,16 @@ class ST_GNN_heterogeneous(nn.Module):
         raw_forecast_bus = self.forecast_decoder_bus(z_bus_cond)
         raw_forecast_gen = self.forecast_decoder_gen(z_gen_cond)
 
-        # ==============================================================
-        # 6. Bounds per step — Vm (sigmoid) and Pg (sigmoid)
-        # ==============================================================
-        # target shapes: [B*n*N_bus, F] -> [B, n, N_bus, F] -> [B, N_bus, n, F]
+        # bounds per forecast horizon step: Vm (sigmoid) and Pg (sigmoid) 
         target_bus_x_full = target_batch["bus"].x.view(B, n, N_bus, -1).permute(0, 2, 1, 3)
         target_gen_x_full = target_batch["gen"].x.view(B, n, N_gen, -1).permute(0, 2, 1, 3)
-
         min_vm = target_bus_x_full[..., MIN_VM_H]  # [B, N_bus, n]
         max_vm = target_bus_x_full[..., MAX_VM_H]
         min_pg = target_gen_x_full[..., MIN_PG]    # [B, N_gen, n]
         max_pg = target_gen_x_full[..., MAX_PG]
 
-        #  out-of-place ops (torch.cat / reassignment) instead of in-place index
-        # assignment because in place leads to -> runtimeError (version-counter conflicts during backpropagation)
+        ## out-of-place ops (torch.cat / reassignment) instead of in-place index
+        ## assignment because in place leads to -> runtimeError (due to pytorch precompile)
         pg_bounded = bound_with_sigmoid(
             raw_forecast_gen[..., FORECAST_PG_IDX], min_pg, max_pg,
         ).unsqueeze(-1)
