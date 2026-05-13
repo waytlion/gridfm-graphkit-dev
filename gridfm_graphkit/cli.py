@@ -15,6 +15,7 @@ from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import Timer
 from lightning.pytorch.callbacks.model_checkpoint import ModelCheckpoint
 from lightning.pytorch.loggers import MLFlowLogger
+from lightning.pytorch.utilities import rank_zero_only
 import lightning as L
 
 
@@ -68,6 +69,17 @@ def get_best_model_state_dict_path(trainer):
 
     return os.path.join(model_dir, best_callback.filename)
 
+@rank_zero_only
+def log_tcn_receptive_field(logger, task):
+    """
+    - log recpetive fiel only when tcn encoder is used in ST-GNN
+    - @rank_zero_only prevents duplicate logs in distributed runs
+    """
+    model = getattr(task, "model", task)
+    tcn = getattr(model, "temporal_bus", None)
+    if tcn is None:
+        return
+    logger.log_hyperparams({"tcn.receptive_field": int(tcn.receptive_field)})
 
 def main_cli(args):
     if getattr(args, "tf32", False):
@@ -111,9 +123,10 @@ def main_cli(args):
                 for key, value in state_dict.items()
             }
         model.load_state_dict(state_dict)
-        
-    precision = "bf16-true" if getattr(args, "bfloat16", False) else None
+    
+    log_tcn_receptive_field(logger, model)
 
+    precision = "bf16-true" if getattr(args, "bfloat16", False) else None
     if precision:
         print("Using bfloat16 precision (via Lightning Trainer precision='bf16-true')")
 
