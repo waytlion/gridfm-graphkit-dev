@@ -326,10 +326,11 @@ class ST_GNN_heterogeneous(nn.Module):
             self.time_proj_gen = nn.Linear(temporal_window, self.n)
 
 
-        # ---- Forecast decoders ----
-        # Feature decoding (per step): maps D -> F
-        # Bus decoder receives z_bus [B, N_bus, n, D] concatenated with step embeddings
-+
+        # ---- Forecast decoders (Fix B: Unshared Output Heads) ----
+        # Feature decoding (per step): maps D -> F independently per horizon step
+        exo_bus_dim = len(self.exo_bus_indices) if self.use_exogenous else 0
+        exo_gen_d = self.exo_gen_dim if self.use_exogenous else 0
+
         mlp_hidden_dim = args.model.mlp_hidden_dim
         mlp_num_layers = args.model.mlp_num_layers
 
@@ -346,10 +347,16 @@ class ST_GNN_heterogeneous(nn.Module):
             layers.append(nn.Linear(curr_dim, out_dim))
             return nn.Sequential(*layers)
 
-        bus_decoder_in = self.latent_dim + self.step_embed_dim 
-        gen_decoder_in = self.latent_dim + self.step_embed_dim 
-        self.forecast_decoder_bus = build_decoder(bus_decoder_in, self.forecast_bus_dim)
-        self.forecast_decoder_gen = build_decoder(gen_decoder_in, self.forecast_gen_dim)
+        bus_decoder_in = self.latent_dim + exo_bus_dim 
+        gen_decoder_in = self.latent_dim + exo_gen_d 
+        
+        # Instantiate n independent MLPs
+        self.forecast_decoders_bus = nn.ModuleList([
+            build_decoder(bus_decoder_in, self.forecast_bus_dim) for _ in range(self.n)
+        ])
+        self.forecast_decoders_gen = nn.ModuleList([
+            build_decoder(gen_decoder_in, self.forecast_gen_dim) for _ in range(self.n)
+        ])
 
     def forward(self, folded_batch, target_batch, B, W, N_bus):
         """
@@ -392,20 +399,17 @@ class ST_GNN_heterogeneous(nn.Module):
             z_bus_trans = self.time_proj_bus(z_bus_seq).permute(0, 1, 3, 2)
             z_gen_trans = self.time_proj_gen(z_gen_seq).permute(0, 1, 3, 2)
 
-        # forecast deocder (optionally concat step-embbeding per horizon step)
-        if self.step_embed_dim > 0 and self.step_embeddings is not None:
-            step_idx = torch.arange(n, device=z_bus_trans.device)
-            step_emb = self.step_embeddings(step_idx)                      # [n, d_s]
-            step_emb_bus = step_emb.unsqueeze(0).unsqueeze(0).expand(B, N_bus, n, self.step_embed_dim)
-            z_bus_cond = torch.cat([z_bus_trans, step_emb_bus], dim=-1)    # [B, N_bus, n, D + d_s]
-            step_emb_gen = step_emb.unsqueeze(0).unsqueeze(0).expand(B, N_gen, n, self.step_embed_dim)
-            z_gen_cond = torch.cat([z_gen_trans, step_emb_gen], dim=-1)    # [B, N_gen, n, D + d_s]
-        else:
-            z_bus_cond = z_bus_trans
-            z_gen_cond = z_gen_trans
+        # forecast decoder: Orthogonalized evaluation per horizon step
+        # Extract the k-th time step [B, N, D], pass it through the k-th MLP, 
+        # and stack the outputs back along the time dimension (dim=2)
+        
+        raw_forecast_bus = torch.stack([
+            self.forecast_decoders_bus[k](z_bus_trans[:, :, k, :]) for k in range(n)
+        ], dim=2)  # [B, N_bus, n, 5]
 
-        raw_forecast_bus = self.forecast_decoder_bus(z_bus_cond)
-        raw_forecast_gen = self.forecast_decoder_gen(z_gen_cond)
+        raw_forecast_gen = torch.stack([
+            self.forecast_decoders_gen[k](z_gen_trans[:, :, k, :]) for k in range(n)
+        ], dim=2)  # [B, N_gen, n, 1]
 
         # bounds per forecast horizon step: Vm (sigmoid) and Pg (sigmoid) 
         target_bus_x_full = target_batch["bus"].x.view(B, n, N_bus, -1).permute(0, 2, 1, 3)
