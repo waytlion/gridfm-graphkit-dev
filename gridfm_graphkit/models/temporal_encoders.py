@@ -133,7 +133,7 @@ class TCN(nn.Module):
         self.network = nn.Sequential(*layers)
 
         #  receptive field param used for logging/debugging
-        self.receptive_field = (kernel_size - 1) * (2 ** num_layers - 1) + 1
+        self.receptive_field = 2*((kernel_size - 1) * (2 ** num_layers - 1)) + 1
 
     def forward(self, h_4d: torch.Tensor) -> torch.Tensor:
         B, N_nodes, W, D_in = h_4d.shape
