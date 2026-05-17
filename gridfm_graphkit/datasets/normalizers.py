@@ -674,10 +674,6 @@ class HeteroDataWindowMVANormalizer(Normalizer):
     def to(self, device):
         pass
 
-    # ------------------------------------------------------------------
-    # Fitting
-    # ------------------------------------------------------------------
-
     def fit(self, data_path: str, scenario_ids: List[int]) -> dict:
         bus_data = pd.read_parquet(os.path.join(data_path, "bus_data.parquet"))
         gen_data = pd.read_parquet(os.path.join(data_path, "gen_data.parquet"))
@@ -704,10 +700,6 @@ class HeteroDataWindowMVANormalizer(Normalizer):
         self.vn_kv_max      = params["vn_kv_max"].item()
         bmo = params.get("baseMVA_orig")
         self.baseMVA_orig   = bmo.item() if hasattr(bmo, "item") else float(bmo)
-
-    # ------------------------------------------------------------------
-    # Static transform (preload time, per individual scenario graph)
-    # ------------------------------------------------------------------
 
     def transform(self, data: HeteroData):
         """Apply only time-invariant transforms; power features stay in MW."""
@@ -739,10 +731,6 @@ class HeteroDataWindowMVANormalizer(Normalizer):
         # Power features left in raw MW; window normalisation applied in collate.
         data.is_normalized = False
 
-    # ------------------------------------------------------------------
-    # Window-level power normalisation helpers
-    # ------------------------------------------------------------------
-
     @staticmethod
     def compute_window_baseMVA(batch_list) -> torch.Tensor:
         """
@@ -758,6 +746,7 @@ class HeteroDataWindowMVANormalizer(Normalizer):
             for g in window_graphs:
                 vals.append(g["bus"].x[:, PD_H].abs())
                 vals.append(g["bus"].x[:, QD_H].abs())
+                vals.append(g["bus"].x[:, QG_H].abs()) 
                 vals.append(g["gen"].x[:, PG_H].abs())
             all_vals = torch.cat(vals)
             non_zero = all_vals[all_vals > 1e-6]
@@ -774,51 +763,62 @@ class HeteroDataWindowMVANormalizer(Normalizer):
 
         folded_batch / target_batch : PyG Batch (B*W and B*n graphs)
         window_baseMVA              : [B] per-sample baseMVA (MW)
+
+        Note:
+            folded_batch and target_batch use the same per-sample `window_baseMVA`.
+            `b_bus_f`/`b_gen_f` and `b_bus_t`/`b_gen_t` differ only in expanded length
+            because folded has `W` timesteps and target has `n` timesteps.
         """
         device = folded_batch["bus"].x.device
         wbmva  = window_baseMVA.to(device)
 
-        # per-node scaling vectors (sample-major, time-minor layout)
+        # per-node scaling vectors 
         b_bus_f = wbmva.repeat_interleave(W * N_bus)   # [B*W*N_bus]
         b_gen_f = wbmva.repeat_interleave(W * N_gen)
         b_bus_t = wbmva.repeat_interleave(n * N_bus)   # [B*n*N_bus]
         b_gen_t = wbmva.repeat_interleave(n * N_gen)
 
-        # per-edge scaling via bus graph assignment
-        bg_f  = folded_batch["bus"].batch
+        # per-edge scaling - memory layout is sample major, time minor
         ei_f  = folded_batch[("bus","connects","bus")].edge_index
-        b_e_f = wbmva[bg_f[ei_f[0]] // W]
-
-        bg_t  = target_batch["bus"].batch
+        b_e_f = wbmva[folded_batch["bus"].batch[ei_f[0]] // W]
         ei_t  = target_batch[("bus","connects","bus")].edge_index
-        b_e_t = wbmva[bg_t[ei_t[0]] // n]
+        b_e_t = wbmva[target_batch["bus"].batch[ei_t[0]] // n]
 
-        # folded batch
-        xb = folded_batch["bus"].x
-        xb[:, PD_H]     /= b_bus_f;  xb[:, QD_H]     /= b_bus_f
-        xb[:, QG_H]     /= b_bus_f;  xb[:, MIN_QG_H] /= b_bus_f
-        xb[:, MAX_QG_H] /= b_bus_f
-        xg = folded_batch["gen"].x
-        xg[:, PG_H] /= b_gen_f;  xg[:, MIN_PG] /= b_gen_f;  xg[:, MAX_PG] /= b_gen_f
-        ea = folded_batch[("bus","connects","bus")].edge_attr
-        ea[:, P_E] /= b_e_f;  ea[:, Q_E] /= b_e_f;  ea[:, RATE_A] /= b_e_f
+        # apply scaling
+        folded_batch["bus"].x[:, PD_H]     /= b_bus_f
+        folded_batch["bus"].x[:, QD_H]     /= b_bus_f
+        folded_batch["bus"].x[:, QG_H]     /= b_bus_f
+        folded_batch["bus"].x[:, MIN_QG_H] /= b_bus_f
+        folded_batch["bus"].x[:, MAX_QG_H] /= b_bus_f
 
-        # target batch
-        yb = target_batch["bus"].x
-        yb[:, PD_H]     /= b_bus_t;  yb[:, QD_H]     /= b_bus_t
-        yb[:, QG_H]     /= b_bus_t;  yb[:, MIN_QG_H] /= b_bus_t
-        yb[:, MAX_QG_H] /= b_bus_t
-        yg = target_batch["gen"].x
-        yg[:, PG_H] /= b_gen_t;  yg[:, MIN_PG] /= b_gen_t;  yg[:, MAX_PG] /= b_gen_t
-        ea_t = target_batch[("bus","connects","bus")].edge_attr
-        ea_t[:, P_E] /= b_e_t;  ea_t[:, Q_E] /= b_e_t;  ea_t[:, RATE_A] /= b_e_t
+        folded_batch["gen"].x[:, PG_H]   /= b_gen_f
+        folded_batch["gen"].x[:, MIN_PG] /= b_gen_f
+        folded_batch["gen"].x[:, MAX_PG] /= b_gen_f
 
+        folded_batch[("bus", "connects", "bus")].edge_attr[:, P_E]    /= b_e_f
+        folded_batch[("bus", "connects", "bus")].edge_attr[:, Q_E]    /= b_e_f
+        folded_batch[("bus", "connects", "bus")].edge_attr[:, RATE_A] /= b_e_f
+
+        target_batch["bus"].x[:, PD_H]     /= b_bus_t
+        target_batch["bus"].x[:, QD_H]     /= b_bus_t
+        target_batch["bus"].x[:, QG_H]     /= b_bus_t
+        target_batch["bus"].x[:, MIN_QG_H] /= b_bus_t
+        target_batch["bus"].x[:, MAX_QG_H] /= b_bus_t
+        target_batch["gen"].x[:, PG_H] /= b_gen_t
+        target_batch["gen"].x[:, MIN_PG] /= b_gen_t
+        target_batch["gen"].x[:, MAX_PG] /= b_gen_t
+
+        target_batch[("bus", "connects", "bus")].edge_attr[:, P_E]    /= b_e_t
+        target_batch[("bus", "connects", "bus")].edge_attr[:, Q_E]    /= b_e_t
+        target_batch[("bus", "connects", "bus")].edge_attr[:, RATE_A] /= b_e_t
+
+        target_batch["bus"].y[:, PD_H]     /= b_bus_t
+        target_batch["bus"].y[:, QD_H]     /= b_bus_t
+        target_batch["bus"].y[:, QG_H]     /= b_bus_t
+        target_batch["gen"].y[:, PG_H] /= b_gen_t
+            
         folded_batch.is_normalized = True
         target_batch.is_normalized = True
-
-    # ------------------------------------------------------------------
-    # Inverse transforms
-    # ------------------------------------------------------------------
 
     def inverse_transform(self, data: HeteroData, window_baseMVA: torch.Tensor):
         """
