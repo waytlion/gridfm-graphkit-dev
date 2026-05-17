@@ -13,6 +13,7 @@ The dataloader yields dicts from collate_temporal:
 """
 
 import torch
+from torch_geometric.data import Batch
 from pytorch_lightning.utilities import rank_zero_only
 
 from gridfm_graphkit.io.registries import TASK_REGISTRY
@@ -40,6 +41,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         self.forecast_preds = {i: [] for i in range(len(args.data.networks))}
         self.forecast_targets = {i: [] for i in range(len(args.data.networks))}
         self.forecast_naive = {i: [] for i in range(len(args.data.networks))}
+        self.forecast_mode = getattr(args.data, "forecast_mode", "direct")
         # Bus metadata for diagnostic plots (populated on first test batch)
         self._bus_type_pq = None
         self._bus_type_pv = None
@@ -59,6 +61,78 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         N_bus = batch["N_bus"]
         return self.model(folded_batch, target_batch, B, W, N_bus)
 
+    def _select_target_step(self, target_batch, B, n, step_index):
+        target_graphs = target_batch.to_data_list()
+        step_graphs = [target_graphs[i * n + step_index] for i in range(B)]
+        return Batch.from_data_list(step_graphs)
+
+    def _autoregressive_rollout(self, batch, dataloader_idx=0):
+        folded_batch = batch["folded_batch"]
+        target_batch = batch["target_batch"]
+        B = batch["B"]
+        W = batch["W"]
+        n = batch["n"]
+        N_bus = batch["N_bus"]
+
+        window_graphs = folded_batch.to_data_list()
+        target_graphs = target_batch.to_data_list()
+
+        windows = [window_graphs[i * W : (i + 1) * W] for i in range(B)]
+        targets = [target_graphs[i * n : (i + 1) * n] for i in range(B)]
+
+        pred_bus_steps = []
+        pred_gen_steps = []
+
+        with torch.no_grad():
+            for step in range(n):
+                all_window_graphs = []
+                target_step_graphs = []
+                for i in range(B):
+                    all_window_graphs.extend(windows[i])
+                    target_step_graphs.append(targets[i][step])
+
+                folded_step = Batch.from_data_list(all_window_graphs)
+                target_step = Batch.from_data_list(target_step_graphs)
+
+                pred_step = self.model(
+                    folded_step,
+                    target_step,
+                    B,
+                    W,
+                    N_bus,
+                    one_step=True,
+                    step_index=0,
+                )
+                if isinstance(pred_step, tuple):
+                    pred_step = {"bus": pred_step[0], "gen": pred_step[1]}
+
+                pred_bus_steps.append(pred_step["bus"])
+                pred_gen_steps.append(pred_step["gen"])
+
+                pred_bus = pred_step["bus"][:, :, 0, :]
+                pred_gen = pred_step["gen"][:, :, 0, :]
+
+                for i in range(B):
+                    next_graph = target_step_graphs[i].clone()
+
+                    bus_x = next_graph["bus"].x
+                    bus_x[:, PD_H] = pred_bus[i, :, 0]
+                    bus_x[:, QD_H] = pred_bus[i, :, 1]
+                    bus_x[:, QG_H] = pred_bus[i, :, 2]
+                    bus_x[:, VM_H] = pred_bus[i, :, 3]
+                    bus_x[:, VA_H] = pred_bus[i, :, 4]
+                    next_graph["bus"].x = bus_x
+
+                    gen_x = next_graph["gen"].x
+                    gen_x[:, PG_H] = pred_gen[i, :, 0]
+                    next_graph["gen"].x = gen_x
+
+                    windows[i] = windows[i][1:] + [next_graph]
+
+        pred_bus = torch.cat(pred_bus_steps, dim=2)  # [B, N_bus, n, 5]
+        pred_gen = torch.cat(pred_gen_steps, dim=2)  # [B, N_gen, n, 1]
+        return {"bus": pred_bus, "gen": pred_gen}
+
     # ------------------------------------------------------------------
     # Shared step
     # ------------------------------------------------------------------
@@ -73,14 +147,24 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
 
         Returns (total_loss, log_dict)
         """
-        pred = self(batch)
+        folded_batch = batch["folded_batch"]
+        target_batch = batch["target_batch"]
+        B = batch["B"]
+        W = batch["W"]
+        n = batch["n"]
+        N_bus = batch["N_bus"]
+
+        use_one_step = self.forecast_mode == "autoregressive" and prefix in {"train", "val"}
+
+        if use_one_step:
+            target_batch = self._select_target_step(target_batch, B, n, 0)
+            pred = self.model(folded_batch, target_batch, B, W, N_bus, one_step=True, step_index=0)
+            n = 1
+        else:
+            pred = self.model(folded_batch, target_batch, B, W, N_bus)
         if isinstance(pred, tuple):
             pred = {"bus": pred[0], "gen": pred[1]}
         # --- Construct target dict [B, N_bus, n, F] from target_batch ---
-        target_batch = batch["target_batch"]
-        B = batch["B"]
-        n = batch["n"]
-        N_bus = batch["N_bus"]
 
         # target_batch["bus"].x: [B*n*N_bus, 15] -> [B, n, N_bus, 15] -> [B, N_bus, n, 15]
         target_bus_x = target_batch["bus"].x
@@ -173,7 +257,53 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         from torch_scatter import scatter_add
 
         # 1. Forward pass
-        total_loss, log_dict, pred = self._shared_step(batch, prefix="test", dataloader_idx=dataloader_idx)
+        if self.forecast_mode == "autoregressive":
+            pred = self._autoregressive_rollout(batch, dataloader_idx=dataloader_idx)
+            if isinstance(pred, tuple):
+                pred = {"bus": pred[0], "gen": pred[1]}
+
+            target_batch = batch["target_batch"]
+            B = batch["B"]
+            n = batch["n"]
+            N_bus = batch["N_bus"]
+
+            target_bus_x = target_batch["bus"].x
+            target_bus_4d = target_bus_x.view(B, n, N_bus, -1).permute(0, 2, 1, 3)
+            target_bus = target_bus_4d[..., BUS_TARGET_INDICES]
+
+            target_gen_x = target_batch["gen"].x
+            N_gen = target_gen_x.size(0) // (B * n)
+            target_gen_4d = target_gen_x.view(B, n, N_gen, -1).permute(0, 2, 1, 3)
+            target_gen = target_gen_4d[..., GEN_TARGET_INDICES]
+
+            target = {"bus": target_bus, "gen": target_gen}
+
+            static_baseMVA = None
+            if hasattr(self, "data_normalizers") and len(self.data_normalizers) > dataloader_idx:
+                norm = self.data_normalizers[dataloader_idx]
+                static_baseMVA = getattr(norm, "baseMVA_static", getattr(norm, "baseMVA", None))
+
+            mask = {
+                "B": B,
+                "n": n,
+                "N_bus": N_bus,
+                "bus_x": target_batch["bus"].x,
+                "gen_x_4d": target_gen_4d,
+                "window_baseMVA": batch.get("window_baseMVA", None),
+                "static_baseMVA": static_baseMVA,
+            }
+
+            loss_dict = self.loss_fn(
+                pred,
+                target,
+                target_batch.edge_index_dict,
+                target_batch.edge_attr_dict,
+                mask,
+            )
+            total_loss = loss_dict.pop("loss")
+            log_dict = {f"test/total_loss": total_loss.detach()}
+        else:
+            total_loss, log_dict, pred = self._shared_step(batch, prefix="test", dataloader_idx=dataloader_idx)
         dataset_name = self.args.data.networks[dataloader_idx]
 
         folded_batch = batch["folded_batch"]
@@ -314,6 +444,8 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         return total_loss
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        if self.forecast_mode == "autoregressive":
+            return self._autoregressive_rollout(batch, dataloader_idx=dataloader_idx)
         return self(batch)
 
     # ------------------------------------------------------------------
@@ -468,7 +600,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
             custom_csv_data[dataset_name] = {
                 "mae_pd": var_metrics[0]["mae"],
                 "rmse_pd": var_metrics[0]["rmse"],
-                "mae_pg": var_metrics[5]["mae"],
+                "mae_pg_gen": var_metrics[5]["mae"],
                 "rmse_pg_gen": var_metrics[5]["rmse"],
                 "total_pd_pred": total_pd_pred,
                 "total_pd_true": total_pd_true,
@@ -541,7 +673,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                 "Metric": [
                     "mae_pd",
                     "rmse_pd",
-                    "mae_pg",
+                    "mae_pg_gen",
                     "rmse_pg_gen",
                     "Avg_ active res_ (MW)",
                     "Avg_ reactive res_ (MVar)",
@@ -557,7 +689,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                 "Value": [
                     custom_data["mae_pd"],
                     custom_data["rmse_pd"],
-                    custom_data["mae_pg"],
+                    custom_data["mae_pg_gen"],
                     custom_data["rmse_pg_gen"],
                     get_metric("Active Power Loss"),
                     get_metric("Reactive Power Loss"),
