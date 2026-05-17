@@ -227,6 +227,19 @@ class MixedLoss(BaseLoss):
         return loss_details
 
 
+def _resolve_horizon_weights(weighting, horizon_len, device, dtype):
+    weighting = str(weighting).lower()
+    if weighting == "uniform":
+        return None
+    if weighting == "harmonic":
+        tau = 0.8
+        steps = torch.arange(1, horizon_len + 1, device=device, dtype=dtype)
+        return 1.0 / (steps ** tau)
+    raise ValueError(f"Unknown horizon_weighting: {weighting}")
+
+
+
+
 @LOSS_REGISTRY.register("LayeredWeightedPhysics")
 class LayeredWeightedPhysicsLoss(BaseLoss):
     def __init__(self, loss_args, args) -> None:
@@ -365,6 +378,7 @@ class ST_ForecastBusMSE(BaseLoss):
         super().__init__()
         self.lambda_load = getattr(loss_args, "lambda_load", 0.5)
         self.lambda_opf = getattr(loss_args, "lambda_opf", 0.5)
+        self.horizon_weighting = getattr(args.training, "horizon_weighting", "uniform")
 
     def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
         pred_load = pred["bus"][..., 0:2]    # [B, N_bus, n, 2]: Pd, Qd
@@ -380,8 +394,22 @@ class ST_ForecastBusMSE(BaseLoss):
             pred_load = pred_load * scaled_baseMVA
             target_load = target_load * scaled_baseMVA
 
-        loss_load = F.mse_loss(pred_load, target_load, reduction="mean")
-        loss_opf = F.mse_loss(pred_opf, target_opf, reduction="mean")
+        def weighted_mse(pred_t, target_t):
+            err = pred_t - target_t
+            mse_per_t = (err ** 2).mean(dim=(0, 1, 3))
+            weights = _resolve_horizon_weights(
+                self.horizon_weighting, mse_per_t.numel(), pred_t.device, pred_t.dtype,
+            )
+            if weights is None:
+                return mse_per_t.mean()
+            weight_sum = weights.sum()
+            if weight_sum <= 0:
+                raise ValueError("horizon weights must sum to a positive value.")
+            weights = weights / weight_sum
+            return (mse_per_t * weights).sum()
+
+        loss_load = weighted_mse(pred_load, target_load)
+        loss_opf = weighted_mse(pred_opf, target_opf)
 
         total = self.lambda_load * loss_load + self.lambda_opf * loss_opf
 
@@ -404,16 +432,32 @@ class ST_ForecastGenMSE(BaseLoss):
 
     def __init__(self, loss_args, args):
         super().__init__()
+        self.horizon_weighting = getattr(args.training, "horizon_weighting", "uniform")
 
     def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
         # Descale into stable Global P.U. space when window normalizer is used
+        pred_gen = pred["gen"]
+        target_gen = target["gen"]
         if mask is not None and mask.get("window_baseMVA") is not None:
-            baseMVA = mask["window_baseMVA"].view(-1, 1, 1, 1).to(pred["gen"].device) 
+            baseMVA = mask["window_baseMVA"].view(-1, 1, 1, 1).to(pred_gen.device)
             scaled_baseMVA = baseMVA / mask["static_baseMVA"]
-            pred["gen"] = pred["gen"] * scaled_baseMVA
-            target["gen"] = target["gen"] * scaled_baseMVA
+            pred_gen = pred_gen * scaled_baseMVA
+            target_gen = target_gen * scaled_baseMVA
 
-        loss_gen = F.mse_loss(pred["gen"], target["gen"], reduction="mean")
+        err = pred_gen - target_gen
+        mse_per_t = (err ** 2).mean(dim=(0, 1, 3))
+        weights = _resolve_horizon_weights(
+            self.horizon_weighting, mse_per_t.numel(), pred_gen.device, pred_gen.dtype,
+        )
+        if weights is None:
+            loss_gen = mse_per_t.mean()
+        else:
+            weight_sum = weights.sum()
+            if weight_sum <= 0:
+                raise ValueError("horizon weights must sum to a positive value.")
+            weights = weights / weight_sum
+            loss_gen = (mse_per_t * weights).sum()
+
         return {"loss": loss_gen, "ST gen MSE (Pg)": loss_gen.detach()}
 
 
