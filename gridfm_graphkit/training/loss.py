@@ -381,22 +381,29 @@ class ST_ForecastBusMSE(BaseLoss):
         self.horizon_weighting = getattr(args.training, "horizon_weighting", "uniform")
 
     def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
-        pred_load = pred["bus"][..., 0:2]    # [B, N_bus, n, 2]: Pd, Qd
-        pred_opf = pred["bus"][..., 2:5]     # [B, N_bus, n, 3]: Qg, Vm, Va
 
-        target_load = target["bus"][..., 0:2]
-        target_opf = target["bus"][..., 2:5]
-
-        # Descale into stable Global P.U. space when window normalizer is used
+        # Descale into stable Global P.U. space when window normalizer is used.
+        # Use local scaled copies to avoid mutating `pred`/`target` in-place.
         if mask is not None and mask.get("window_baseMVA") is not None:
-            baseMVA = mask["window_baseMVA"].view(-1, 1, 1, 1).to(pred["bus"].device) 
+            baseMVA = mask["window_baseMVA"].view(-1, 1, 1, 1).to(pred["bus"].device)
             scaled_baseMVA = baseMVA / mask["static_baseMVA"]
-            pred_load = pred_load * scaled_baseMVA
-            target_load = target_load * scaled_baseMVA
+            # Simplest approach: clone bus tensors, scale indices 0:3 once, then slice.
+            scaled_bus_pred = pred["bus"].clone()
+            scaled_bus_target = target["bus"].clone()
+            scaled_bus_pred[..., 0:3] = scaled_bus_pred[..., 0:3] * scaled_baseMVA
+            scaled_bus_target[..., 0:3] = scaled_bus_target[..., 0:3] * scaled_baseMVA
+            pred_load = scaled_bus_pred[..., 0:2]
+            target_load = scaled_bus_target[..., 0:2]
+            pred_opf = scaled_bus_pred[..., 2:5]
+            target_opf = scaled_bus_target[..., 2:5]
+        else:
+            pred_load = pred["bus"][..., 0:2]
+            target_load = target["bus"][..., 0:2]
+            pred_opf = pred["bus"][..., 2:5]
+            target_opf = target["bus"][..., 2:5]
 
         def weighted_mse(pred_t, target_t):
-            err = pred_t - target_t
-            mse_per_t = (err ** 2).mean(dim=(0, 1, 3))
+            mse_per_t = ((pred_t - target_t) ** 2).mean(dim=(0, 1, 3))
             weights = _resolve_horizon_weights(
                 self.horizon_weighting, mse_per_t.numel(), pred_t.device, pred_t.dtype,
             )
@@ -408,9 +415,8 @@ class ST_ForecastBusMSE(BaseLoss):
             weights = weights / weight_sum
             return (mse_per_t * weights).sum()
 
-        loss_load = weighted_mse(pred_load, target_load)
-        loss_opf = weighted_mse(pred_opf, target_opf)
-
+        loss_load = weighted_mse(pred_load, target_load) # [B, N_bus, n, 2]: Pd, Qd
+        loss_opf = weighted_mse(pred_opf, target_opf)   # [B, N_bus, n, 3]: Qg, Vm, Va
         total = self.lambda_load * loss_load + self.lambda_opf * loss_opf
 
         return {
@@ -435,19 +441,22 @@ class ST_ForecastGenMSE(BaseLoss):
         self.horizon_weighting = getattr(args.training, "horizon_weighting", "uniform")
 
     def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
-        # Descale into stable Global P.U. space when window normalizer is used
-        pred_gen = pred["gen"]
-        target_gen = target["gen"]
+        # Descale into stable Global P.U. space when window normalizer is used.
+        # Use local scaled copies to avoid mutating `pred`/`target` in-place.
         if mask is not None and mask.get("window_baseMVA") is not None:
-            baseMVA = mask["window_baseMVA"].view(-1, 1, 1, 1).to(pred_gen.device)
+            baseMVA = mask["window_baseMVA"].view(-1, 1, 1, 1).to(pred["gen"].device)
             scaled_baseMVA = baseMVA / mask["static_baseMVA"]
-            pred_gen = pred_gen * scaled_baseMVA
-            target_gen = target_gen * scaled_baseMVA
+            pred_gen = pred["gen"] * scaled_baseMVA
+            target_gen = target["gen"] * scaled_baseMVA
+        else:
+            pred_gen = pred["gen"]
+            target_gen = target["gen"]
 
+        # apply weighting (default = equal weighting)
         err = pred_gen - target_gen
         mse_per_t = (err ** 2).mean(dim=(0, 1, 3))
         weights = _resolve_horizon_weights(
-            self.horizon_weighting, mse_per_t.numel(), pred_gen.device, pred_gen.dtype,
+            self.horizon_weighting, mse_per_t.numel(), pred["gen"].device, pred["gen"].dtype,
         )
         if weights is None:
             loss_gen = mse_per_t.mean()
