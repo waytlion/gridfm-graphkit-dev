@@ -69,18 +69,6 @@ def get_best_model_state_dict_path(trainer):
 
     return os.path.join(model_dir, best_callback.filename)
 
-@rank_zero_only
-def log_tcn_receptive_field(logger, task):
-    """
-    - log recpetive fiel only when tcn encoder is used in ST-GNN
-    - @rank_zero_only prevents duplicate logs in distributed runs
-    """
-    model = getattr(task, "model", task)
-    tcn = getattr(model, "temporal_bus", None)
-    if tcn is None:
-        return
-    logger.log_hyperparams({"tcn.receptive_field": int(tcn.receptive_field)})
-
 def main_cli(args):
     if getattr(args, "tf32", False):
         torch.set_float32_matmul_precision("high")  # enables TF32 on Ampere+ GPUs

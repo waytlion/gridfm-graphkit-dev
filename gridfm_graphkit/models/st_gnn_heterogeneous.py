@@ -185,7 +185,7 @@ class CrossAttentionTimeDecoder(nn.Module):
         - learnable-query cross-attention
         - Query = learnable horizon positional embeddings (E_future) shifted by a context vector, which is the terminal TCN state
             - E_future: Learnable embeddings for each horizon step: [1, n, D] (shortcut to encode horizon-dependent structure early in training - mby useless but prob not a problem)
-            - Context: only useful for TCN i believe: context == last TCN state
+            - ontext_proj gives sample-specific conditioning (what this particular sequence implies) -> only useful for TCN i believe: context == last TCN state
     """
     def __init__(self, latent_dim: int, horizon: int, num_heads: int, dropout: float = 0.0):
         super().__init__()
@@ -232,7 +232,7 @@ class ST_GNN_heterogeneous(nn.Module):
           -> Temporal encoder (TCN/transformer)  -> z_bus_seq, z_gen_seq  [B, N, D, W]
           -> Time Projection (Linear/Attn)       -> z_bus_trans, z_gen_trans [B, N, n, D]
           -> Condition (step embeddings)         -> z_bus_cond [B, N, n, D_cond]
-          -> forecast MLP (per step shared)      -> y_bus [B, N, n, 5], y_gen [B, N, n, 1]
+          -> forecast MLP (per step|shared)      -> y_bus [B, N, n, 5], y_gen [B, N, n, 1]
           -> bound Vm, Pg per step               -> final forecast
     
     """

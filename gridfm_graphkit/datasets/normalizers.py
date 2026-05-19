@@ -850,9 +850,17 @@ class HeteroDataWindowMVANormalizer(Normalizer):
         xg = data["gen"].x
         xg[:, PG_H] *= b_gen;  xg[:, MIN_PG] *= b_gen;  xg[:, MAX_PG] *= b_gen
         
-        # Restore edge admittances
+        # Restore edge attributes: branch flows (P_E, Q_E), thermal limits (RATE_A), and admittances
         if ("bus", "connects", "bus") in data.edge_attr_dict:
             ea = data.edge_attr_dict[("bus", "connects", "bus")]
+            # Compute per-edge scaling factor (same logic as apply_window_power_norm)
+            ei = data[("bus", "connects", "bus")].edge_index
+            b_e = wbmva[data["bus"].batch[ei[0]] // gpb]
+            # Restore branch flows and thermal limits (were divided by b_e in apply_window_power_norm)
+            ea[:, P_E]    *= b_e
+            ea[:, Q_E]    *= b_e
+            ea[:, RATE_A] *= b_e
+            # Restore admittances using static baseMVA 
             ea[:, YFF_TT_R: YFT_TF_I + 1] *= self.baseMVA_static
         if getattr(data["bus"], "y", None) is not None:
             data["bus"].y[:, PD_H] *= b_bus
