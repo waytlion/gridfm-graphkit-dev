@@ -1,21 +1,28 @@
 """
-Temporal encoders: (TCN/Transformer) for the ST-GNN architecture.
+Temporal encoders: (TCN/Transformer/TransformerDecoder) for the ST-GNN architecture.
     - Plug-in components for modelling temporal structure in node embeddings
-    - Both encoders:
-        - input [B, N, W, D]
-        - exchange/aggregate information along the W (time) axis
-        - return [B, N, D, W] (same content, permuted).
 
 Classes:
     - TCN:
         TemporalBlock - residual block with two dilated causal convolutions
         TCN           - stacks TemporalBlocks with exponential dilation
                       - number of TemporalBlocks is computed automatically so that the receptive field >= the input window W.
-                      - returns a full temporal sequence preserving the window dimension: [B, N_nodes, D, W] (features-first).
+                      - Input: [B, N, W, D] → Return: [B, N, D, W]
 
-    - Transformer:
+    - Transformer Encoder:
         SinusoidalPositionalEncoding
         TemporalTransformerEncoder
+                      - Bidirectional self-attention over the temporal (W) dimension.
+                      - Input: [B, N, W, D] → Return: [B, N, D, W]
+
+    - Transformer Decoder:
+        TransformerDecoderLayer - Pre-LN decoder layer (self-attn + cross-attn + FFN)
+        TemporalTransformerDecoder
+                      - Proper encoder-decoder architecture with learned future queries.
+                      - Self-attention among future queries (future consistency)
+                      - Cross-attention into historical memory (retrieve past physics)
+                      - Subsumes both temporal encoder AND temporal decoder stages.
+                      - Input: [B, N, W, D] → Return: [B, N, n, D]
 """
 
 import math
@@ -215,3 +222,148 @@ class TemporalTransformerEncoder(nn.Module):
         x = self.pos_enc(x)
         y = self.encoder(x)  # [B*N, W, D]
         return y.reshape(B, N_nodes, W, D).permute(0, 1, 3, 2).contiguous()
+
+
+class TransformerDecoderLayer(nn.Module):
+    """Single Pre-LN decoder layer: self-attention → cross-attention → FFN.
+
+    Self-attention: future queries attend to each other (future consistency)
+    Cross-attention: future queries attend to historical memory (retrieve past physics)
+
+    All sub-layers use Pre-LN (norm_first) with residual connections.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        dim_feedforward: int,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+
+        # Self-attention (among future queries)
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm_sa = nn.LayerNorm(d_model)
+
+        # Cross-attention (queries attend to memory)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=d_model,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.norm_ca = nn.LayerNorm(d_model)
+
+        # Feed-forward network
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, dim_feedforward),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_feedforward, d_model),
+            nn.Dropout(dropout),
+        )
+        self.norm_ff = nn.LayerNorm(d_model)
+
+    def forward(
+        self, Q: torch.Tensor, memory: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Q:      [B*N, n, D]  — future queries
+        memory: [B*N, W, D]  — time-embedded spatial encoder output
+
+        Returns: [B*N, n, D]
+        """
+        # Pre-LN self-attention (future consistency)
+        q_norm = self.norm_sa(Q)
+        Q = Q + self.self_attn(q_norm, q_norm, q_norm)[0]
+
+        # Pre-LN cross-attention (retrieve past physics)
+        q_norm = self.norm_ca(Q)
+        Q = Q + self.cross_attn(q_norm, memory, memory)[0]
+
+        # Pre-LN FFN
+        Q = Q + self.ffn(self.norm_ff(Q))
+
+        return Q
+
+
+class TemporalTransformerDecoder(nn.Module):
+    """
+    Transformer decoder over the temporal dimension with learned future queries.
+
+    Subsumes both the temporal encoder and temporal decoder stages:
+        - Sinusoidal PE is added to the memory (historical window)
+        - Learned future queries [1, n, D] are expanded per sample
+        - Each decoder layer applies self-attention (future consistency)
+          and cross-attention (retrieve past physics from memory)
+
+    Forward():
+        Input:  [B, N_nodes, W, D]   (spatial latent sequence)
+        Return: [B, N_nodes, n, D]   (one embedding per forecast horizon step)
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        window_size: int,
+        horizon: int,
+        num_layers: int,
+        num_heads: int,
+        dim_feedforward: int,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.horizon = horizon
+
+        # Sinusoidal PE for the historical memory (time-embed the W positions)
+        self.memory_pe = SinusoidalPositionalEncoding(input_dim, max_len=window_size)
+
+        # Learned future queries: one per forecast horizon step
+        self.future_queries = nn.Parameter(torch.empty(1, horizon, input_dim))
+        nn.init.trunc_normal_(self.future_queries, std=0.02)
+
+        # Decoder layers
+        self.decoder_layers = nn.ModuleList([
+            TransformerDecoderLayer(
+                d_model=input_dim,
+                num_heads=num_heads,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+            )
+            for _ in range(num_layers)
+        ])
+
+        # Final layer norm (Post-LN for stability after last residual)
+        self.final_norm = nn.LayerNorm(input_dim)
+
+    def forward(self, h_4d: torch.Tensor) -> torch.Tensor:
+        """
+        h_4d: [B, N_nodes, W, D]  — spatial encoder output (unfolded)
+        Returns: [B, N_nodes, n, D] — one embedding per forecast horizon step
+        """
+        B, N, W, D = h_4d.shape
+
+        # Flatten node dim into batch for attention operations
+        memory = h_4d.reshape(B * N, W, D)         # [B*N, W, D]
+
+        # Add sinusoidal temporal PE to memory
+        memory = self.memory_pe(memory)             # [B*N, W, D]
+
+        # Expand learned queries for each (sample, node) pair
+        Q = self.future_queries.expand(B * N, -1, -1)  # [B*N, n, D]
+
+        # Decoder layers: self-attn (future consistency) → cross-attn (past physics) → FFN
+        for layer in self.decoder_layers:
+            Q = layer(Q, memory)                    # [B*N, n, D]
+
+        Q = self.final_norm(Q)                      # [B*N, n, D]
+
+        return Q.reshape(B, N, self.horizon, D)     # [B, N, n, D]
+
