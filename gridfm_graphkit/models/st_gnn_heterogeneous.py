@@ -16,7 +16,7 @@ from torch_geometric.nn import HeteroConv, TransformerConv
 
 from gridfm_graphkit.io.registries import MODELS_REGISTRY
 from gridfm_graphkit.models.utils import bound_with_sigmoid
-from gridfm_graphkit.models.temporal_encoders import TCN, TemporalTransformerEncoder
+from gridfm_graphkit.models.temporal_encoders import TCN, TemporalTransformerEncoder, TemporalTransformerDecoder
 from gridfm_graphkit.datasets.globals import (
     PD_H, QD_H,
     MIN_VM_H, MAX_VM_H,
@@ -231,9 +231,8 @@ class ST_GNN_heterogeneous(nn.Module):
           -> unfold                              -> [B, N, W, D]
           -> Temporal encoder (TCN/transformer)  -> z_bus_seq, z_gen_seq  [B, N, D, W]
           -> Time Projection (Linear/Attn)       -> z_bus_trans, z_gen_trans [B, N, n, D]
-          -> Condition (step embeddings)         -> z_bus_cond [B, N, n, D_cond]
           -> forecast MLP (per step|shared)      -> y_bus [B, N, n, 5], y_gen [B, N, n, 1]
-          -> bound Vm, Pg per step               -> final forecast
+          -> bound Vm, Pg per step               -> final forecast  
     
     """
 
@@ -252,25 +251,22 @@ class ST_GNN_heterogeneous(nn.Module):
         self.step_embed_dim = getattr(args.model, "step_embed_dim", 0)
         self.temporal_decoder = getattr(args.model, "temporal_decoder", "linear")
         self.forecast_decoder_mode = getattr(args.model, "forecast_decoder_mode", "shared")
-
-        # Step embeddings default to 0 -> should not break the model
-        self.step_embeddings = None
-        if self.step_embed_dim > 0:
-            self.step_embeddings = nn.Embedding(self.n, self.step_embed_dim)
-        # ---- Spatial encoder ----
-        self.spatial_encoder = UnmaskedSpatialEncoder(args)
-
-        # ---- Dimensions ----
         hidden_dim = args.model.hidden_size
         heads = args.model.attention_head
         self.latent_dim = hidden_dim * heads
-
-        self.forecast_bus_dim = args.model.output_bus_dim  # [Pd, Qd, Qg, Vm, Va]
-        self.forecast_gen_dim = args.model.output_gen_dim  # [Pg]
-
-        # ---- Temporal encoders (pluggable: tcn | transformer) ----
         temporal_window = args.data.temporal_window
         temporal_dropout = getattr(args.model, "dropout", 0.0)
+        self.forecast_bus_dim = args.model.output_bus_dim  # [Pd, Qd, Qg, Vm, Va]
+        self.forecast_gen_dim = args.model.output_gen_dim  # [Pg]
+        # Step embeddings default to 0 
+        self.step_embeddings = None
+        if self.step_embed_dim > 0:
+            self.step_embeddings = nn.Embedding(self.n, self.step_embed_dim)
+            
+        # ---- Spatial encoder ----
+        self.spatial_encoder = UnmaskedSpatialEncoder(args)
+
+        # ---- Temporal encoders (pluggable: tcn | transformer) ----
         self.temporal_encoder_type = getattr(args.model, "temporal_encoder", "tcn")
 
         if self.temporal_encoder_type == "tcn":
@@ -307,10 +303,32 @@ class ST_GNN_heterogeneous(nn.Module):
                 dim_feedforward=t_ff,
                 dropout=temporal_dropout,
             )
+        elif self.temporal_encoder_type == "transformer_decoder":
+            t_layers = getattr(args.model, "temporal_num_layers", 2)
+            t_heads = getattr(args.model, "temporal_num_heads", 8)
+            t_ff = 4 * self.latent_dim
+            self.temporal_bus = TemporalTransformerDecoder(
+                input_dim=self.latent_dim,
+                window_size=temporal_window,
+                horizon=self.n,
+                num_layers=t_layers,
+                num_heads=t_heads,
+                dim_feedforward=t_ff,
+                dropout=temporal_dropout,
+            )
+            self.temporal_gen = TemporalTransformerDecoder(
+                input_dim=self.latent_dim,
+                window_size=temporal_window,
+                horizon=self.n,
+                num_layers=t_layers,
+                num_heads=t_heads,
+                dim_feedforward=t_ff,
+                dropout=temporal_dropout,
+            )
         else:
             raise ValueError(
                 f"Unknown temporal_encoder type: '{self.temporal_encoder_type}'. "
-                f"Must be 'tcn' or 'transformer'."
+                f"Must be 'tcn', 'transformer', or 'transformer_decoder'."
             )
 
         # ---- Temporal decoder ----
@@ -393,22 +411,31 @@ class ST_GNN_heterogeneous(nn.Module):
         h_bus_4d = h_bus.view(B, W, N_bus, D).permute(0, 2, 1, 3)  # [B, N_bus, W, D]
         h_gen_4d = h_gen.view(B, W, N_gen, D).permute(0, 2, 1, 3)  # [B, N_gen, W, D]
 
-        # temporal encoder 
-        z_bus_seq = self.temporal_bus(h_bus_4d)  # [B, N_bus, D, W]
-        z_gen_seq = self.temporal_gen(h_gen_4d)  # [B, N_gen, D, W]
-
-        # temporal decoder [B, N, D, W] -> [B, N, n, D]
-        if self.temporal_decoder == "cross_attention":
-            z_bus_trans = self.time_attn_bus(z_bus_seq)
-            z_gen_trans = self.time_attn_gen(z_gen_seq)
+        # temporal encoder + temporal decoder
+        if self.temporal_encoder_type == "transformer_decoder":
+            # Transformer decoder directly outputs [B, N, n, D]
+            # (subsumes both temporal encoder and temporal decoder stages;
+            #  sinusoidal PE for memory is applied internally)
+            z_bus_trans = self.temporal_bus(h_bus_4d)  # [B, N_bus, n, D]
+            z_gen_trans = self.temporal_gen(h_gen_4d)  # [B, N_gen, n, D]
         else:
-            z_bus_trans = self.time_proj_bus(z_bus_seq).permute(0, 1, 3, 2)
-            z_gen_trans = self.time_proj_gen(z_gen_seq).permute(0, 1, 3, 2)
+            # TCN / Transformer Encoder path: [B, N, W, D] -> [B, N, D, W]
+            z_bus_seq = self.temporal_bus(h_bus_4d)  # [B, N_bus, D, W]
+            z_gen_seq = self.temporal_gen(h_gen_4d)  # [B, N_gen, D, W]
+
+            # temporal decoder [B, N, D, W] -> [B, N, n, D]
+            if self.temporal_decoder == "cross_attention":
+                z_bus_trans = self.time_attn_bus(z_bus_seq)
+                z_gen_trans = self.time_attn_gen(z_gen_seq)
+            else:
+                z_bus_trans = self.time_proj_bus(z_bus_seq).permute(0, 1, 3, 2)
+                z_gen_trans = self.time_proj_gen(z_gen_seq).permute(0, 1, 3, 2)
 
         if one_step:
             z_bus_trans = z_bus_trans[:, :, :1, :]
             z_gen_trans = z_gen_trans[:, :, :1, :]
 
+        #Optional Step embedding
         if self.step_embed_dim > 0:
             if one_step:
                 step_idx = torch.tensor([step_index], device=z_bus_trans.device)

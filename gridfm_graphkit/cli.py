@@ -112,8 +112,6 @@ def main_cli(args):
             }
         model.load_state_dict(state_dict)
     
-    log_tcn_receptive_field(logger, model)
-
     precision = "bf16-true" if getattr(args, "bfloat16", False) else None
     if precision:
         print("Using bfloat16 precision (via Lightning Trainer precision='bf16-true')")
