@@ -18,7 +18,10 @@ from pytorch_lightning.utilities import rank_zero_only
 
 from gridfm_graphkit.io.registries import TASK_REGISTRY
 from gridfm_graphkit.tasks.opf_task import OptimalPowerFlowTask
-from gridfm_graphkit.datasets.globals import PD_H, QD_H, QG_H, VM_H, VA_H, PG_H, PQ_H, PV_H
+from gridfm_graphkit.datasets.globals import (
+    PD_H, QD_H, QG_H, VM_H, VA_H, PG_H, PQ_H, PV_H,
+    C0_H, C1_H, C2_H
+)
 
 
 # Target feature indices for constructing the [B, N, n, 5] target tensor
@@ -41,6 +44,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         self.forecast_preds = {i: [] for i in range(len(args.data.networks))}
         self.forecast_targets = {i: [] for i in range(len(args.data.networks))}
         self.forecast_naive = {i: [] for i in range(len(args.data.networks))}
+        self.forecast_gaps = {i: [] for i in range(len(args.data.networks))}
         self.forecast_mode = getattr(args.data, "forecast_mode", "direct")
         # Bus metadata for diagnostic plots (populated on first test batch)
         self._bus_type_pq = None
@@ -375,6 +379,18 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
             "gen": naive_gen.detach().cpu(),
         })
 
+        # 6a. Compute optimality gap per horizon step [%]
+        c0 = target_gen_4d[..., C0_H]
+        c1 = target_gen_4d[..., C1_H]
+        c2 = target_gen_4d[..., C2_H]
+        pg_p = pred_gen.squeeze(-1)
+        pg_t = target_gen.squeeze(-1)
+
+        _cost_p = (c0 + c1 * pg_p + c2 * pg_p**2).sum(dim=1)  # [B, n]
+        _cost_t = (c0 + c1 * pg_t + c2 * pg_t**2).sum(dim=1)  # [B, n]
+        _gaps = torch.abs(_cost_p - _cost_t) / (_cost_t + 1e-8) * 100
+        self.forecast_gaps[dataloader_idx].append(_gaps.detach().cpu())
+
         # 6b. Store bus type masks and gen-to-bus mapping (static, first batch only)
         if self._bus_type_pq is None:
             target_bus_full = target_batch["bus"].x.view(B, n, N_bus, -1)
@@ -545,6 +561,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
             all_tgt_gen = torch.cat([d["gen"] for d in self.forecast_targets[dataset_idx]], dim=0)
             all_naive_bus = torch.cat([d["bus"] for d in self.forecast_naive[dataset_idx]], dim=0)
             all_naive_gen = torch.cat([d["gen"] for d in self.forecast_naive[dataset_idx]], dim=0)
+            all_gaps = torch.cat(self.forecast_gaps[dataset_idx], dim=0)    # [S, n]
 
             # Compute metrics per variable.  Shapes are [S, N, n] after indexing the feature dim.
             var_metrics = []
@@ -568,6 +585,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
             # ── Build per-timestep CSV ──────────────────────────────────
             # Layout: rows = timestep (1..n), then a "GLOBAL" summary row
             # Columns: single-level flattened format "Variable - Metric"
+            gap_t = all_gaps.mean(dim=0)
             rows_per_t = []
             for t in range(n_horizon):
                 row = {}
@@ -578,6 +596,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                     row[f"{vname} - wMAPE"] = vm["wmape_t"][t].item()
                     row[f"{vname} - MASE"] = vm["mase_t"][t].item()
                     row[f"{vname} - MSSE"] = vm["msse_t"][t].item()
+                row["Opt. Gap (%)"] = gap_t[t].item()
                 rows_per_t.append(row)
 
             # Global summary row
@@ -589,6 +608,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                 global_row[f"{vname} - wMAPE"] = vm["wmape"]
                 global_row[f"{vname} - MASE"] = vm["mase"]
                 global_row[f"{vname} - MSSE"] = vm["msse"]
+            global_row["Opt. Gap (%)"] = all_gaps.mean().item()
 
             # Calculate system-wide totals across all test samples, nodes, and timesteps
             total_pd_pred = all_pred_bus[..., 0].sum().item()
@@ -653,6 +673,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         self.forecast_preds = {i: [] for i in range(len(self.args.data.networks))}
         self.forecast_targets = {i: [] for i in range(len(self.args.data.networks))}
         self.forecast_naive = {i: [] for i in range(len(self.args.data.networks))}
+        self.forecast_gaps = {i: [] for i in range(len(self.args.data.networks))}
         self._bus_type_pq = None
         self._bus_type_pv = None
         self._gen_to_bus = None
