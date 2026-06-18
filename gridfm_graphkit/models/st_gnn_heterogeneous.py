@@ -331,18 +331,19 @@ class ST_GNN_heterogeneous(nn.Module):
                 f"Must be 'tcn', 'transformer', or 'transformer_decoder'."
             )
 
-        # ---- Temporal decoder ----
-        if self.temporal_decoder == "cross_attention":
-            decoder_heads = args.model.temporal_decoder_heads
-            assert self.latent_dim % decoder_heads == 0, (
-                f"latent_dim ({self.latent_dim}) must be divisible by "
-                f"temporal_decoder_heads ({decoder_heads})"
-            )
-            self.time_attn_bus = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, temporal_dropout)
-            self.time_attn_gen = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, temporal_dropout)
-        else:
-            self.time_proj_bus = nn.Linear(temporal_window, self.n)
-            self.time_proj_gen = nn.Linear(temporal_window, self.n)
+        # ---- Temporal decoder (not needed for transformer_decoder, which subsumes both stages) ----
+        if self.temporal_encoder_type != "transformer_decoder":
+            if self.temporal_decoder == "cross_attention":
+                decoder_heads = args.model.temporal_decoder_heads
+                assert self.latent_dim % decoder_heads == 0, (
+                    f"latent_dim ({self.latent_dim}) must be divisible by "
+                    f"temporal_decoder_heads ({decoder_heads})"
+                )
+                self.time_attn_bus = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, temporal_dropout)
+                self.time_attn_gen = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, temporal_dropout)
+            else:
+                self.time_proj_bus = nn.Linear(temporal_window, self.n)
+                self.time_proj_gen = nn.Linear(temporal_window, self.n)
 
 
         # ---- Forecast decoders (shared vs per-horizon) ----
