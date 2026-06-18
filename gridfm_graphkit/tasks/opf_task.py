@@ -134,16 +134,15 @@ class OptimalPowerFlowTask(ReconstructionTask):
         angle_min = bus_edge_attr[:, ANG_MIN]
         angle_max = bus_edge_attr[:, ANG_MAX]
 
-        bus_angles = output["bus"][:, VA_OUT]  # in degrees
+        # Convert Va predictions from radians to degrees
+        bus_angles = output["bus"][:, VA_OUT] * 180.0 / torch.pi
         from_bus = bus_edge_index[0]
         to_bus = bus_edge_index[1]
         angle_diff = torch.abs(bus_angles[from_bus] - bus_angles[to_bus])
 
-        angle_excess_low = F.relu(angle_min - angle_diff)  # violation if too small
-        angle_excess_high = F.relu(angle_diff - angle_max)  # violation if too large
-        branch_angle_violation_mean = (
-            torch.mean(angle_excess_low + angle_excess_high) * 180.0 / torch.pi
-        )
+        angle_excess_low = F.relu(angle_min - angle_diff)  # violation if too small (degrees)
+        angle_excess_high = F.relu(angle_diff - angle_max)  # violation if too large (degrees)
+        branch_angle_violation_mean = torch.mean(angle_excess_low + angle_excess_high)
 
         # ── Node injection residuals (power balance) ────────────────────
         P_in, Q_in = node_injection_layer(Pft, Qft, bus_edge_index, num_bus)
