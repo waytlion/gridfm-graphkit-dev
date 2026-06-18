@@ -862,6 +862,8 @@ class HeteroDataWindowMVANormalizer(Normalizer):
             ea[:, RATE_A] *= b_e
             # Restore admittances using static baseMVA 
             ea[:, YFF_TT_R: YFT_TF_I + 1] *= self.baseMVA_static
+            ea[:, ANG_MIN] *= 180.0 / torch.pi
+            ea[:, ANG_MAX] *= 180.0 / torch.pi
         if getattr(data["bus"], "y", None) is not None:
             data["bus"].y[:, PD_H] *= b_bus
             data["bus"].y[:, QD_H] *= b_bus
