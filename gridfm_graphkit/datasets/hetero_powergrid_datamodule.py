@@ -12,6 +12,7 @@ from gridfm_graphkit.io.param_handler import (
 from gridfm_graphkit.datasets.utils import (
     split_dataset,
     split_dataset_by_load_scenario_idx,
+    split_dataset_by_time,
 )
 from gridfm_graphkit.datasets.powergrid_hetero_dataset import HeteroGridDatasetDisk
 import numpy as np
@@ -130,17 +131,34 @@ class LitGridHeteroDataModule(L.LightningDataModule):
     def _split_dataset(self, dataset, load_scenarios, val_ratio, test_ratio):
         """
         Hook for dataset splitting (can be overridden by subclasses).
-        
+
+        Split strategy (in priority order):
+          1. ``temporal_split: true``        -> chronological split (split_dataset_by_time)
+          2. ``split_by_load_scenario_idx``  -> group-by-load-scenario split
+          3. otherwise                       -> plain random split
+
+        Strategy (1) is opt-in via config and used e.g. by the OPF surrogate and the
+        forecasting tasks to keep the chronological test window held out (no leakage).
+        Configs that set neither flag retain the original random-split behavior.
+
         Args:
             dataset: Subset to split
             load_scenarios: Load scenario indices for each sample
             val_ratio: Validation split ratio
             test_ratio: Test split ratio
-            
+
         Returns:
             train_dataset, val_dataset, test_dataset
         """
-        if self.split_by_load_scenario_idx:
+        if getattr(self.args.data, "temporal_split", False):
+            return split_dataset_by_time(
+                dataset,
+                self.data_dir,
+                load_scenarios,
+                val_ratio,
+                test_ratio,
+            )
+        elif self.split_by_load_scenario_idx:
             return split_dataset_by_load_scenario_idx(
                 dataset,
                 self.data_dir,
