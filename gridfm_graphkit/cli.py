@@ -73,16 +73,30 @@ def main_cli(args):
     if getattr(args, "tf32", False):
         torch.set_float32_matmul_precision("high")  # enables TF32 on Ampere+ GPUs
 
+    # Parse optional MLflow tags ("key=value" pairs) for queryable run metadata
+    # (e.g. approach/case/seed/split), used by downstream metric aggregation.
+    tags = None
+    tags_arg = getattr(args, "tags", None)
+    if tags_arg:
+        tags = dict(kv.split("=", 1) for kv in tags_arg)
+
     logger = MLFlowLogger(
         save_dir=args.log_dir,
         experiment_name=args.exp_name,
         run_name=args.run_name,
+        tags=tags,
     )
 
     with open(args.config, "r") as f:
         base_config = yaml.safe_load(f)
 
     config_args = NestedNamespace(**base_config)
+
+    # CLI --seed overrides the config seed (enables multi-seed sweeps / SLURM arrays
+    # without duplicating config files).
+    seed_override = getattr(args, "seed", None)
+    if seed_override is not None:
+        config_args.seed = seed_override
 
     L.seed_everything(config_args.seed, workers=True)
 

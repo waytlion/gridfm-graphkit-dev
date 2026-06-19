@@ -89,6 +89,18 @@ def main():
         default=False,
         help="Enable TF32 on Ampere+ GPUs via torch.set_float32_matmul_precision('high').",
     )
+    _seed_kwargs = dict(
+        type=int,
+        default=None,
+        help="Override the seed from the config (e.g. for multi-seed sweeps / SLURM arrays).",
+    )
+    _tags_kwargs = dict(
+        type=str,
+        nargs="*",
+        default=None,
+        metavar="KEY=VALUE",
+        help="MLflow tags as KEY=VALUE pairs, e.g. 'approach=surrogate case=case118 seed=0'.",
+    )
 
     # ---- TRAIN SUBCOMMAND ----
     train_parser = subparsers.add_parser("train", help="Run training")
@@ -100,6 +112,8 @@ def main():
     train_parser.add_argument("--compile", **_compile_kwargs)
     train_parser.add_argument("--bfloat16", **_bfloat16_kwargs)
     train_parser.add_argument("--tf32", **_tf32_kwargs)
+    train_parser.add_argument("--seed", **_seed_kwargs)
+    train_parser.add_argument("--tags", **_tags_kwargs)
 
     # ---- FINETUNE SUBCOMMAND ----
     finetune_parser = subparsers.add_parser("finetune", help="Run fine-tuning")
@@ -112,6 +126,8 @@ def main():
     finetune_parser.add_argument("--compile", **_compile_kwargs)
     finetune_parser.add_argument("--bfloat16", **_bfloat16_kwargs)
     finetune_parser.add_argument("--tf32", **_tf32_kwargs)
+    finetune_parser.add_argument("--seed", **_seed_kwargs)
+    finetune_parser.add_argument("--tags", **_tags_kwargs)
 
     # ---- EVALUATE SUBCOMMAND ----
     evaluate_parser = subparsers.add_parser(
@@ -134,7 +150,9 @@ def main():
                                  help="Compute ground-truth AC/DC power balance metrics on the test split.")
     evaluate_parser.add_argument("--save_output", action="store_true",
                                  help="Save per-bus predictions CSV via the predict step.")
-    
+    evaluate_parser.add_argument("--seed", **_seed_kwargs)
+    evaluate_parser.add_argument("--tags", **_tags_kwargs)
+
     # ---- PREDICT SUBCOMMAND ----
     predict_parser = subparsers.add_parser("predict", help="Evaluate model performance")
     predict_parser.add_argument("--model_path", type=str, required=None)
@@ -150,6 +168,8 @@ def main():
     predict_parser.add_argument("--compile", **_compile_kwargs)
     predict_parser.add_argument("--bfloat16", **_bfloat16_kwargs)
     predict_parser.add_argument("--tf32", **_tf32_kwargs)
+    predict_parser.add_argument("--seed", **_seed_kwargs)
+    predict_parser.add_argument("--tags", **_tags_kwargs)
 
     args = parser.parse_args()
     main_cli(args)
