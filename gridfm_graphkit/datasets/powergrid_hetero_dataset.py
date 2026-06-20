@@ -109,6 +109,10 @@ class HeteroGridDatasetDisk(Dataset):
     def download(self):
         pass
 
+    def _attach_extra_bus_attrs(self, data, bus_df):
+        # hook: subclasses attach extra per-bus tensors from bus_df. no-op in base.
+        return
+
     def process(self):
         print("LOADING DATA")
         bus_data = pd.read_parquet(osp.join(self.raw_dir, "bus_data.parquet"))
@@ -171,7 +175,10 @@ class HeteroGridDatasetDisk(Dataset):
 
             data["bus"].y = data["bus"].x[:, : (VA_H + 1)].clone()
             data["gen"].y = data["gen"].x[:, : (PG_H + 1)].clone()
-            
+
+            # hook: subclasses attach extra per-bus tensors (e.g. true_load). no-op here.
+            self._attach_extra_bus_attrs(data, bus_df)
+
     
             # Bus-Bus edges
             branch_df = branch_groups.get_group(scenario)

@@ -41,6 +41,13 @@ class OptimalPowerFlowTransforms(Compose):
         # Pass the list of transforms to Compose
         super().__init__(transforms)
 
+
+@TRANSFORM_REGISTRY.register("OptimalPowerFlowTwoStep")
+class OptimalPowerFlowTwoStepTransforms(OptimalPowerFlowTransforms):
+    # same masking as OPF; two-step task differs only in the residual-load hook
+    pass
+
+
 @TRANSFORM_REGISTRY.register("ForecastOPF")
 class ForecastOPFTransforms(Compose):
     """

@@ -133,6 +133,11 @@ class PhysicsDecoderOPF(nn.Module):
 class PhysicsDecoderForecastOPF(PhysicsDecoderOPF):
     pass
 
+@PHYSICS_DECODER_REGISTRY.register("OptimalPowerFlowTwoStep")
+class PhysicsDecoderTwoStepOPF(PhysicsDecoderOPF):
+    # two-step OPF surrogate uses the same physics decoder as OPF
+    pass
+
 @PHYSICS_DECODER_REGISTRY.register("PowerFlow")
 class PhysicsDecoderPF(nn.Module):
     def forward(self, P_in, Q_in, bus_data_pred, bus_data_orig, agg_bus, mask_dict):

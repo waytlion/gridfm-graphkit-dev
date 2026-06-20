@@ -286,12 +286,26 @@ class OptimalPowerFlowTask(ReconstructionTask):
 
         return metrics
 
+    def _override_residual_load(self, batch):
+        """Hook for subclasses to replace the load used in the power-balance
+        residual computation
+        - The base task scores the residual against the model's own input load, so
+        this is a no-op. Overridden by OptimalPowerFlowTwoStepTask.
+        - two-step task overrides to score feasibility against the true realized load rather than the forecasted
+        - compute_opf_metrics() reads the load from
+        ``batch.x_dict['bus'][:, [PD_H, QD_H]]`` (denormalized, physical units).
+        """
+
+        return
+
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         output, loss_dict = self.shared_step(batch)
         dataset_name = self.args.data.networks[dataloader_idx]
 
         self.data_normalizers[dataloader_idx].inverse_transform(batch)
         self.data_normalizers[dataloader_idx].inverse_output(output, batch)
+        
+        self._override_residual_load(batch)
 
         # Build OPF-format target: [Vm, Va, Pg_agg, Qg]
         # Pg is per-generator, so we aggregate to bus level first.

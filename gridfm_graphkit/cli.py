@@ -1,8 +1,9 @@
 from gridfm_graphkit.datasets.hetero_powergrid_datamodule import LitGridHeteroDataModule
 from gridfm_graphkit.datasets.hetero_powergrid_forecast_datamodule import LitGridHeteroForecastDataModule
 from gridfm_graphkit.datasets.hetero_powergrid_temporal_datamodule import LitGridHeteroTemporalDataModule
+from gridfm_graphkit.datasets.hetero_powergrid_twostep_datamodule import LitGridHeteroTwoStepDataModule
 from gridfm_graphkit.io.param_handler import NestedNamespace
-from gridfm_graphkit.training.callbacks import SaveBestModelStateDict
+from gridfm_graphkit.training.callbacks import SaveBestModelStateDict, InferenceTimer
 import numpy as np
 import pandas as pd
 import yaml
@@ -109,6 +110,10 @@ def main_cli(args):
         litGrid = LitGridHeteroTemporalDataModule(
             config_args, args.data_path, normalizer_stats_path=normalizer_stats_path
         )
+    elif config_args.task.task_name in ["OptimalPowerFlowTwoStep"]:
+        litGrid = LitGridHeteroTwoStepDataModule(
+            config_args, args.data_path, normalizer_stats_path=normalizer_stats_path
+        )
     else:
         litGrid = LitGridHeteroDataModule(
             config_args, args.data_path, normalizer_stats_path=normalizer_stats_path
@@ -179,6 +184,7 @@ def main_cli(args):
             num_nodes=1,
             log_every_n_steps=1,
             default_root_dir=args.log_dir,
+            callbacks=[InferenceTimer()],  # log forward-only inference time to MLflow
             **trainer_kwargs,
         )
         test_trainer.test(model=model, datamodule=litGrid)

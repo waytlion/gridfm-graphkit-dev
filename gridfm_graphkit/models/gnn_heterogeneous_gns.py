@@ -262,7 +262,7 @@ class GNS_heterogeneous(nn.Module):
                         bus_temp[:, 4], 
                     ], dim=1)
                     
-                elif self.task == "OptimalPowerFlow":
+                elif self.task in ("OptimalPowerFlow", "OptimalPowerFlowTwoStep"):
                     bus_temp[:, VM_OUT] = bound_with_sigmoid(
                         bus_temp[:, VM_OUT],
                         x_dict["bus"][:, MIN_VM_H],

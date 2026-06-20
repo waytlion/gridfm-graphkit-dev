@@ -38,17 +38,39 @@ class ReconstructionTask(BaseTask):
         self.loss_fn = get_loss_function(args)
         self.batch_size = int(args.training.batch_size)
         self.test_outputs = {i: [] for i in range(len(args.data.networks))}
+        # forward-only inference timing (toggled by InferenceTimer during test)
+        self._time_forward = False
+        self._infer_time_s = 0.0
+        self._infer_samples = 0
 
     def forward(self, x_dict, edge_index_dict, edge_attr_dict, mask_dict):
         return self.model(x_dict, edge_index_dict, edge_attr_dict, mask_dict)
 
     def shared_step(self, batch):
-        output = self.forward(
-            x_dict=batch.x_dict,
-            edge_index_dict=batch.edge_index_dict,
-            edge_attr_dict=batch.edge_attr_dict,
-            mask_dict=batch.mask_dict,
-        )
+        if self._time_forward:
+            # time ONLY the forward (the "dispatch decision"), CUDA-synced
+            import time, torch
+            cuda = torch.cuda.is_available()
+            if cuda:
+                torch.cuda.synchronize()
+            t0 = time.perf_counter()
+            output = self.forward(
+                x_dict=batch.x_dict,
+                edge_index_dict=batch.edge_index_dict,
+                edge_attr_dict=batch.edge_attr_dict,
+                mask_dict=batch.mask_dict,
+            )
+            if cuda:
+                torch.cuda.synchronize()
+            self._infer_time_s += time.perf_counter() - t0
+            self._infer_samples += int(batch.num_graphs)
+        else:
+            output = self.forward(
+                x_dict=batch.x_dict,
+                edge_index_dict=batch.edge_index_dict,
+                edge_attr_dict=batch.edge_attr_dict,
+                mask_dict=batch.mask_dict,
+            )
 
         loss_dict = self.loss_fn(
             output,
