@@ -132,14 +132,11 @@ class LitGridHeteroDataModule(L.LightningDataModule):
         """
         Hook for dataset splitting (can be overridden by subclasses).
 
-        Split strategy (in priority order):
-          1. ``temporal_split: true``        -> chronological split (split_dataset_by_time)
-          2. ``split_by_load_scenario_idx``  -> group-by-load-scenario split
-          3. otherwise                       -> plain random split
-
-        Strategy (1) is opt-in via config and used e.g. by the OPF surrogate and the
-        forecasting tasks to keep the chronological test window held out (no leakage).
-        Configs that set neither flag retain the original random-split behavior.
+        Split strategy (defined in config):
+          - ``eval_full_as_test: true``     -> all scenarios to test (eval only; needs --normalizer_stats)
+          - ``temporal_split: true``        -> chronological split important for forecasting! (e.g. jan-sept; sept-dez)
+          - ``split_by_load_scenario_idx: true``  -> group-by-load-scenario split (so every sample of a scenario stays together in same split group)
+          - otherwise                       -> plain random split
 
         Args:
             dataset: Subset to split
@@ -150,6 +147,12 @@ class LitGridHeteroDataModule(L.LightningDataModule):
         Returns:
             train_dataset, val_dataset, test_dataset
         """
+        # eval-only: all scenarios -> test split (train/val empty); needs --normalizer_stats
+        if getattr(self.args.data, "eval_full_as_test", False):
+            all_idx = list(range(len(dataset)))
+            empty = Subset(dataset, [])
+            return empty, empty, Subset(dataset, all_idx)
+
         if getattr(self.args.data, "temporal_split", False):
             return split_dataset_by_time(
                 dataset,

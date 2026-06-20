@@ -116,7 +116,7 @@ class MaskedBusMSE(torch.nn.Module):
         mask_dict,
         model=None,
     ):
-        if self.args.task == "OptimalPowerFlow":
+        if self.args.task in ("OptimalPowerFlow", "OptimalPowerFlowTwoStep"):
             pred_cols = [VM_OUT, VA_OUT, QG_OUT]
             target_cols = [VM_H, VA_H, QG_H]
         else:
