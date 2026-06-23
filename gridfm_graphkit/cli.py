@@ -151,6 +151,7 @@ def main_cli(args):
     if precision:
         trainer_kwargs["precision"] = precision
 
+    callbacks = get_training_callbacks(config_args)
     trainer = L.Trainer(
         logger=logger,
         accelerator=config_args.training.accelerator,
@@ -159,7 +160,7 @@ def main_cli(args):
         log_every_n_steps=1000,
         default_root_dir=args.log_dir,
         max_epochs=config_args.training.epochs,
-        callbacks=get_training_callbacks(config_args), 
+        callbacks=callbacks,
         **trainer_kwargs,
     )
     if args.command == "train" or args.command == "finetune":
@@ -175,6 +176,15 @@ def main_cli(args):
             model.load_state_dict(best_state_dict)
         else:
             print("Best model state_dict not found; using latest in-memory weights for evaluation.")
+
+        # One-time fit duration (minutes), logged for the efficiency comparison.
+        from lightning.pytorch.callbacks import Timer
+        _timer = next((c for c in callbacks if isinstance(c, Timer)), None)
+        if _timer is not None:
+            try:
+                logger.log_metrics({"train_time_min": _timer.time_elapsed("train") / 60.0})
+            except Exception as e:
+                print(f"[train_time] could not log fit duration: {e}")
 
     if args.command != "predict":
         test_trainer = L.Trainer(
