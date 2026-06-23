@@ -20,7 +20,7 @@ from gridfm_graphkit.io.registries import TASK_REGISTRY
 from gridfm_graphkit.tasks.opf_task import OptimalPowerFlowTask
 from gridfm_graphkit.datasets.globals import (
     PD_H, QD_H, QG_H, VM_H, VA_H, PG_H, PQ_H, PV_H,
-    C0_H, C1_H, C2_H
+    C0_H, C1_H, C2_H,
 )
 
 
@@ -51,6 +51,23 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         self._bus_type_pv = None
         self._gen_to_bus = None
         self._N_bus = None
+
+        # Timing and sample counters
+        self.train_time_total_s = 0.0
+        self.train_samples = 0
+        self.total_test_sequences = 0
+
+    def on_train_batch_start(self, batch, batch_idx):
+        import time
+        self._train_batch_start_time = time.perf_counter()
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        import time
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        duration = time.perf_counter() - self._train_batch_start_time
+        self.train_time_total_s += duration
+        self.train_samples += int(batch["B"])
 
     # ------------------------------------------------------------------
     # Forward
@@ -98,6 +115,13 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                 folded_step = Batch.from_data_list(all_window_graphs)
                 target_step = Batch.from_data_list(target_step_graphs)
 
+                if self._time_forward:
+                    import time
+                    _cuda = torch.cuda.is_available()
+                    if _cuda:
+                        torch.cuda.synchronize()
+                    _t0 = time.perf_counter()
+
                 pred_step = self.model(
                     folded_step,
                     target_step,
@@ -107,6 +131,13 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                     one_step=True,
                     step_index=0,
                 )
+
+                if self._time_forward:
+                    if _cuda:
+                        torch.cuda.synchronize()
+                    self._infer_time_s += time.perf_counter() - _t0
+                    self._infer_samples += int(B)
+
                 if isinstance(pred_step, tuple):
                     pred_step = {"bus": pred_step[0], "gen": pred_step[1]}
 
@@ -160,12 +191,25 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
 
         use_one_step = self.forecast_mode == "autoregressive" and prefix in {"train", "val"}
 
+        if self._time_forward:
+            import time  # torch is already imported at module scope
+            _cuda = torch.cuda.is_available()
+            if _cuda:
+                torch.cuda.synchronize()
+            _t0 = time.perf_counter()
+
         if use_one_step:
             target_batch = self._select_target_step(target_batch, B, n, 0)
             pred = self.model(folded_batch, target_batch, B, W, N_bus, one_step=True, step_index=0)
             n = 1
         else:
             pred = self.model(folded_batch, target_batch, B, W, N_bus)
+
+        if self._time_forward:
+            if _cuda:
+                torch.cuda.synchronize()
+            self._infer_time_s += time.perf_counter() - _t0
+            self._infer_samples += int(B * n)  # B windows x n horizon steps = dispatch decisions
         if isinstance(pred, tuple):
             pred = {"bus": pred[0], "gen": pred[1]}
         # --- Construct target dict [B, N_bus, n, F] from target_batch ---
@@ -259,6 +303,8 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         from torch_scatter import scatter_add
+
+        self.total_test_sequences += int(batch["B"])
 
         # 1. Forward pass
         if self.forecast_mode == "autoregressive":
@@ -456,6 +502,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                 add_dataloader_idx=False,
                 sync_dist=True,
                 logger=True,
+                reduce_fx="max" if "viol. max" in metric else "mean",
             )
         return total_loss
 
@@ -682,6 +729,25 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         # Delegate RMSE.csv + metrics.csv (OPF physics metrics) to parent
         super().on_test_end()
 
+        # Extract timing statistics
+        train_time_total = getattr(self, "train_time_total_s", 0.0)
+        train_samples_count = getattr(self, "train_samples", 0)
+        if train_time_total > 0.0 and train_samples_count > 0:
+            t_time_val = train_time_total
+            t_time_per_sample = train_time_total / train_samples_count
+        else:
+            t_time_val = " "
+            t_time_per_sample = " "
+
+        infer_time_total = getattr(self, "_infer_time_s", 0.0)
+        test_sequences_count = getattr(self, "total_test_sequences", 0)
+        if test_sequences_count > 0:
+            i_time_val = infer_time_total
+            i_time_per_sample = infer_time_total / test_sequences_count
+        else:
+            i_time_val = " "
+            i_time_per_sample = " "
+
         # ── Overwrite metrics.csv with the custom requested layout ──
         final_metrics = self.trainer.callback_metrics
         for dataset_name, custom_data in custom_csv_data.items():
@@ -706,6 +772,10 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                     "total_pd_pred",
                     "total_pg_true",
                     "total_pg_pred",
+                    "Training time model-only (s)",
+                    "Training time model-only per sample (s)",
+                    "Inference time model-only (s)",
+                    "Inference time model-only per sample (s)",
                 ],
                 "Value": [
                     custom_data["mae_pd"],
@@ -722,6 +792,10 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                     custom_data["total_pd_pred"],
                     custom_data["total_pg_true"],
                     custom_data["total_pg_pred"],
+                    t_time_val,
+                    t_time_per_sample,
+                    i_time_val,
+                    i_time_per_sample,
                 ]
             }
 
