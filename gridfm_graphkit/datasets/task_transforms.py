@@ -44,7 +44,6 @@ class OptimalPowerFlowTransforms(Compose):
 
 @TRANSFORM_REGISTRY.register("OptimalPowerFlowTwoStep")
 class OptimalPowerFlowTwoStepTransforms(OptimalPowerFlowTransforms):
-    # same masking as OPF; two-step task differs only in the residual-load hook
     pass
 
 

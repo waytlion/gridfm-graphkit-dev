@@ -147,7 +147,7 @@ class LitGridHeteroDataModule(L.LightningDataModule):
         Returns:
             train_dataset, val_dataset, test_dataset
         """
-        # eval-only: all scenarios -> test split (train/val empty); needs --normalizer_stats
+        # all input data goes into test set (-> train/val empty); needs --normalizer_stats
         if getattr(self.args.data, "eval_full_as_test", False):
             all_idx = list(range(len(dataset)))
             empty = Subset(dataset, [])

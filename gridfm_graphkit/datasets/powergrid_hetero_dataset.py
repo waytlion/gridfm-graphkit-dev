@@ -110,7 +110,6 @@ class HeteroGridDatasetDisk(Dataset):
         pass
 
     def _attach_extra_bus_attrs(self, data, bus_df):
-        # hook: subclasses attach extra per-bus tensors from bus_df. no-op in base.
         return
 
     def process(self):
