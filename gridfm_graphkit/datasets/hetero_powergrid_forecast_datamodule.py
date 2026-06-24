@@ -15,10 +15,6 @@ class LitGridHeteroForecastDataModule(LitGridHeteroDataModule):
     Inherits all normalization & setup from LitGridHeteroDataModule.
     Differences:
      1.  Uses HeteroGridForecastDatasetDisk (t → t+1 pairs).
-
-    Note: chronological splitting via ``temporal_split: true`` is now provided by the base
-    ``LitGridHeteroDataModule._split_dataset`` (hoisted there so the OPF surrogate task can
-    reuse it). This subclass therefore no longer overrides ``_split_dataset``.
     """
 
     def _create_dataset(self, data_path_network, data_normalizer):
