@@ -177,15 +177,6 @@ def main_cli(args):
         else:
             print("Best model state_dict not found; using latest in-memory weights for evaluation.")
 
-        # One-time fit duration (minutes), logged for the efficiency comparison.
-        from lightning.pytorch.callbacks import Timer
-        _timer = next((c for c in callbacks if isinstance(c, Timer)), None)
-        if _timer is not None:
-            try:
-                logger.log_metrics({"train_time_min": _timer.time_elapsed("train") / 60.0})
-            except Exception as e:
-                print(f"[train_time] could not log fit duration: {e}")
-
     if args.command != "predict":
         test_trainer = L.Trainer(
             logger=logger,
