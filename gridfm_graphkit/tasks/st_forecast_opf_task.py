@@ -18,6 +18,12 @@ from pytorch_lightning.utilities import rank_zero_only
 
 from gridfm_graphkit.io.registries import TASK_REGISTRY
 from gridfm_graphkit.tasks.opf_task import OptimalPowerFlowTask
+from gridfm_graphkit.models.utils import ComputeBranchFlow
+from gridfm_graphkit.tasks.constraint_metrics import (
+    ConstraintViolationAccumulator,
+    per_type_from_opf_batch,
+    canonical_scalar_rows,
+)
 from gridfm_graphkit.datasets.globals import (
     PD_H, QD_H, QG_H, VM_H, VA_H, PG_H, PQ_H, PV_H,
     C0_H, C1_H, C2_H,
@@ -56,6 +62,10 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         self.train_time_total_s = 0.0
         self.train_samples = 0
         self.total_test_sequences = 0
+
+        # Canonical constraint-violation accumulators (per network)
+        self._branch_flow = ComputeBranchFlow()
+        self._viol_acc = {i: ConstraintViolationAccumulator() for i in range(len(args.data.networks))}
 
     def on_train_batch_start(self, batch, batch_idx):
         import time
@@ -491,6 +501,12 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
             output_opf, target_opf, target_batch, dataset_name, dataloader_idx,
         )
 
+        # 8b. Accumulate canonical constraint-violation stats (same extraction as
+        # the surrogate arm). Each (window, horizon-step) graph in target_batch is
+        # one scenario — matching compare.py flattening horizon into scenarios.
+        per_type, num_scen = per_type_from_opf_batch(output_opf, target_batch, self._branch_flow)
+        self._viol_acc[dataloader_idx].update(per_type, num_scen)
+
         # 9. Log all test metrics
         test_metrics = {**opf_metrics}
         test_metrics["Test loss"] = total_loss.detach()
@@ -748,61 +764,51 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
             i_time_val = " "
             i_time_per_sample = " "
 
-        # ── Overwrite metrics.csv with the custom requested layout ──
+        # ── Overwrite metrics.csv with the canonical layout (compare.py-aligned
+        #    names + constraint-violation quintet), so the E2E arm is directly
+        #    comparable to the exact and surrogate arms. ──
+        # NOTE: this writer is @rank_zero_only, so violation stats reflect rank 0's
+        # test shard — consistent with the forecast metrics above (single-device
+        # test is assumed, as elsewhere in this task).
         final_metrics = self.trainer.callback_metrics
         for dataset_name, custom_data in custom_csv_data.items():
-            
-            def get_metric(m_name):
-                val = final_metrics.get(f"{dataset_name}/{m_name}", " ")
-                return val.item() if hasattr(val, "item") else val
+            idx = self.args.data.networks.index(dataset_name)
 
-            new_data = {
-                "Metric": [
-                    "mae_pd",
-                    "rmse_pd",
-                    "mae_pg_gen",
-                    "rmse_pg_gen",
-                    "Avg_ active res_ (MW)",
-                    "Avg_ reactive res_ (MVar)",
-                    "Mean optimality gap (%)",
-                    "Mean branch thermal violation from (MVA)",
-                    "Mean branch thermal violation to (MVA)",
-                    "Mean branch angle difference violation (radians)",
-                    "total_pd_true",
-                    "total_pd_pred",
-                    "total_pg_true",
-                    "total_pg_pred",
-                    "Training time model-only (s)",
-                    "Training time model-only per sample (s)",
-                    "Inference time model-only (s)",
-                    "Inference time model-only per sample (s)",
-                ],
-                "Value": [
-                    custom_data["mae_pd"],
-                    custom_data["rmse_pd"],
-                    custom_data["mae_pg_gen"],
-                    custom_data["rmse_pg_gen"],
-                    get_metric("Active Power Loss"),
-                    get_metric("Reactive Power Loss"),
-                    get_metric("Opt gap"),
-                    get_metric("Branch termal violation from"),
-                    get_metric("Branch termal violation to"),
-                    get_metric("Branch voltage angle difference violations"),
-                    custom_data["total_pd_true"],
-                    custom_data["total_pd_pred"],
-                    custom_data["total_pg_true"],
-                    custom_data["total_pg_pred"],
-                    t_time_val,
-                    t_time_per_sample,
-                    i_time_val,
-                    i_time_per_sample,
-                ]
-            }
+            # Group this dataset's base OPF metrics for canonical_scalar_rows.
+            grouped = {}
+            prefix = f"{dataset_name}/"
+            for full_key, value in final_metrics.items():
+                if full_key.startswith(prefix):
+                    grouped[full_key[len(prefix):]] = (
+                        value.item() if hasattr(value, "item") else value
+                    )
 
-            df_new = pd.DataFrame(new_data)
+            rows = canonical_scalar_rows(grouped)
+            # Forecast-specific rows (not in the OPF callback metrics)
+            rows += [
+                {"Metric": "MAE Pd", "Value": custom_data["mae_pd"], "Unit": "MW"},
+                {"Metric": "RMSE Pd", "Value": custom_data["rmse_pd"], "Unit": "MW"},
+                {"Metric": "Generator Pg MAE", "Value": custom_data["mae_pg_gen"], "Unit": "MW"},
+            ]
+            # Canonical constraint-violation quintet
+            rows += self._viol_acc[idx].finalize_rows(prefix="")
+            # E2E diagnostics + timing (kept)
+            rows += [
+                {"Metric": "total_pd_true", "Value": custom_data["total_pd_true"], "Unit": "MW"},
+                {"Metric": "total_pd_pred", "Value": custom_data["total_pd_pred"], "Unit": "MW"},
+                {"Metric": "total_pg_true", "Value": custom_data["total_pg_true"], "Unit": "MW"},
+                {"Metric": "total_pg_pred", "Value": custom_data["total_pg_pred"], "Unit": "MW"},
+                {"Metric": "Training time model-only (s)", "Value": t_time_val, "Unit": "s"},
+                {"Metric": "Training time model-only per sample (s)", "Value": t_time_per_sample, "Unit": "s"},
+                {"Metric": "Inference time model-only (s)", "Value": i_time_val, "Unit": "s"},
+                {"Metric": "Inference time model-only per sample (s)", "Value": i_time_per_sample, "Unit": "s"},
+            ]
+
             residuals_csv_path = os.path.join(test_dir, f"{dataset_name}_metrics.csv")
-            # We overwrite the original metrics.csv created by parent with exactly these required metrics
-            df_new.to_csv(residuals_csv_path, index=False)
+            pd.DataFrame(rows).to_csv(residuals_csv_path, index=False)
+
+        # Reset violation accumulators for any subsequent test run.
+        self._viol_acc = {i: ConstraintViolationAccumulator() for i in range(len(self.args.data.networks))}
 
 
 

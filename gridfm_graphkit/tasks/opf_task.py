@@ -298,6 +298,17 @@ class OptimalPowerFlowTask(ReconstructionTask):
 
         return
 
+    def _after_opf_metrics(self, output, target, batch, dataloader_idx=0):
+        """Hook for subclasses to accumulate extra per-batch test metrics.
+
+        No-op in the base task. Overridden by the thesis arms
+        (OptimalPowerFlowTwoStepTask) to accumulate canonical constraint-violation
+        statistics. ``output``/``target`` are OPF-format and ``batch`` is
+        denormalized (physical units) at call time.
+        """
+
+        return
+
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         output, loss_dict = self.shared_step(batch)
         dataset_name = self.args.data.networks[dataloader_idx]
@@ -336,6 +347,9 @@ class OptimalPowerFlowTask(ReconstructionTask):
         opf_metrics = self._compute_opf_metrics(
             output, target, batch, dataset_name, dataloader_idx,
         )
+
+        # Hook: subclasses (thesis arms) accumulate canonical violation stats.
+        self._after_opf_metrics(output, target, batch, dataloader_idx)
 
         # Merge into loss_dict and log
         test_metrics = {**opf_metrics}
