@@ -19,6 +19,7 @@ from pytorch_lightning.utilities import rank_zero_only
 from gridfm_graphkit.io.registries import TASK_REGISTRY
 from gridfm_graphkit.tasks.opf_task import OptimalPowerFlowTask
 from gridfm_graphkit.models.utils import ComputeBranchFlow
+from gridfm_graphkit.tasks.perbus_residual_dump import PerBusResidualAccumulator
 from gridfm_graphkit.tasks.constraint_metrics import (
     ConstraintViolationAccumulator,
     per_type_from_opf_batch,
@@ -66,6 +67,8 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         # Canonical constraint-violation accumulators (per network)
         self._branch_flow = ComputeBranchFlow()
         self._viol_acc = {i: ConstraintViolationAccumulator() for i in range(len(args.data.networks))}
+        # Per-bus SIGNED residual dump (error-distribution plot); shared accumulator.
+        self._perbus_acc = PerBusResidualAccumulator(len(args.data.networks))
 
     def on_train_batch_start(self, batch, batch_idx):
         import time
@@ -507,6 +510,14 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         per_type, num_scen = per_type_from_opf_batch(output_opf, target_batch, self._branch_flow)
         self._viol_acc[dataloader_idx].update(per_type, num_scen)
 
+        # Per-bus SIGNED residual dump (dispatch vs true future load in target_batch).
+        # load_pred = E2E's OWN predicted load (flat_pred bus cols 0,1 = Pd,Qd,
+        # denormalized), aligned with target_batch bus ordering -> forecast-space residual.
+        self._perbus_acc.accumulate(
+            output_opf, target_batch, dataloader_idx,
+            load_pred=flat_pred["bus"][:, [0, 1]],
+        )
+
         # 9. Log all test metrics
         test_metrics = {**opf_metrics}
         test_metrics["Test loss"] = total_loss.detach()
@@ -807,8 +818,11 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
             residuals_csv_path = os.path.join(test_dir, f"{dataset_name}_metrics.csv")
             pd.DataFrame(rows).to_csv(residuals_csv_path, index=False)
 
-        # Reset violation accumulators for any subsequent test run.
+            self._perbus_acc.write(idx, dataset_name, test_dir, grouped)
+
+        # Reset accumulators for any subsequent test run.
         self._viol_acc = {i: ConstraintViolationAccumulator() for i in range(len(self.args.data.networks))}
+        self._perbus_acc = PerBusResidualAccumulator(len(self.args.data.networks))
 
 
 

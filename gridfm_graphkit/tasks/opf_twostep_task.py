@@ -31,6 +31,7 @@ from gridfm_graphkit.tasks.opf_task import OptimalPowerFlowTask
 from gridfm_graphkit.io.registries import TASK_REGISTRY
 from gridfm_graphkit.datasets.globals import PD_H, QD_H
 from gridfm_graphkit.models.utils import ComputeBranchFlow
+from gridfm_graphkit.tasks.perbus_residual_dump import PerBusResidualAccumulator
 from gridfm_graphkit.tasks.constraint_metrics import (
     ConstraintViolationAccumulator,
     per_type_from_opf_batch,
@@ -53,6 +54,8 @@ class OptimalPowerFlowTwoStepTask(OptimalPowerFlowTask):
         # _after_opf_metrics (which knows dataloader_idx).
         self._pending_pd_pred = 0.0
         self._pending_pd_true = 0.0
+        self._pending_forecast_bus = None  # per-bus forecast load snapshot (set per batch)
+        self._perbus_acc = None
 
     def on_test_start(self):
         # Fresh per-network violation accumulators + totals for this test run.
@@ -62,6 +65,7 @@ class OptimalPowerFlowTwoStepTask(OptimalPowerFlowTask):
             i: {"pd_pred": 0.0, "pd_true": 0.0, "pg_pred": 0.0, "pg_true": 0.0}
             for i in range(n)
         }
+        self._perbus_acc = PerBusResidualAccumulator(n)
 
     def _override_residual_load(self, batch):
         # replace (forecast) load in x with the true realized load, in place,
@@ -71,6 +75,10 @@ class OptimalPowerFlowTwoStepTask(OptimalPowerFlowTask):
         # (batch is already inverse_transform'd, so both are physical MW.)
         self._pending_pd_pred = batch.x_dict["bus"][:, PD_H].sum().item()
         self._pending_pd_true = true_load[:, 0].sum().item()
+        # Per-bus forecast load snapshot (before overwrite) for the forecast-space residual.
+        self._pending_forecast_bus = torch.stack(
+            [batch.x_dict["bus"][:, PD_H], batch.x_dict["bus"][:, QD_H]], dim=1
+        ).detach().clone()
         batch.x_dict["bus"][:, PD_H] = true_load[:, 0]
         batch.x_dict["bus"][:, QD_H] = true_load[:, 1]
 
@@ -90,6 +98,9 @@ class OptimalPowerFlowTwoStepTask(OptimalPowerFlowTask):
         t["pd_true"] += self._pending_pd_true
         t["pg_pred"] += output["gen"].sum().item()
         t["pg_true"] += target["gen"].sum().item()
+
+        self._perbus_acc.accumulate(output, batch, dataloader_idx,
+                                    load_pred=self._pending_forecast_bus)
 
     @rank_zero_only
     def _canonical_metrics_dir(self):
@@ -161,3 +172,5 @@ class OptimalPowerFlowTwoStepTask(OptimalPowerFlowTask):
             ]
             path = os.path.join(test_dir, f"{dataset}_metrics.csv")
             pd.DataFrame(rows).to_csv(path, index=False)
+
+            self._perbus_acc.write(idx, dataset, test_dir, grouped.get(dataset, {}))
