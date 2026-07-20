@@ -214,6 +214,48 @@ class CrossAttentionTimeDecoder(nn.Module):
         return out.reshape(B, N, self.horizon, D)
 
 
+class SeasonalSkipTimeDecoder(nn.Module):
+    """
+    Temporal Decoder: Maps input window W to prediction horizon n
+        - Input: [B, N, D, W]
+        - return: [B, N, n, D]
+
+    Motivation (MLflow diagnosis of TCN baseline, per-step MASE):
+        - t+1..t+12 strongly beat seasonal-naive (MASE ~0.3) but t+24 barely does (MASE 0.73)
+        - linear time_proj (shared W->n mix over all channels/nodes) fails to route the
+          step-aligned seasonal lag (state `period` hours before each target) to far steps
+
+    Architecture: for horizon step k (1..n) combine three paths:
+        - l_k: learned linear time-mix over W  (== default linear time_proj)
+        - s_k: seasonal-lag state z[..., W - period + k - 1]  (same hour, previous day)
+        - c:   terminal state z[..., -1]  (recency / causal TCN summary)
+      out_k = l_k + W_s(s_k) + W_c(c)
+        - W_s / W_c zero-initialized -> training starts exactly at the linear baseline
+        - indices clamped to [0, W-1] so short smoke-test windows still run
+    """
+
+    def __init__(self, latent_dim: int, window: int, horizon: int, period: int = 24):
+        super().__init__()
+        self.horizon = horizon
+        self.time_proj = nn.Linear(window, horizon)
+        self.seasonal_proj = nn.Linear(latent_dim, latent_dim)
+        self.terminal_proj = nn.Linear(latent_dim, latent_dim)
+        nn.init.zeros_(self.seasonal_proj.weight)
+        nn.init.zeros_(self.seasonal_proj.bias)
+        nn.init.zeros_(self.terminal_proj.weight)
+        nn.init.zeros_(self.terminal_proj.bias)
+        # per-step seasonal-lag positions, clamped for short windows
+        idx = [min(max(window - period + k - 1, 0), window - 1) for k in range(1, horizon + 1)]
+        self.register_buffer("seasonal_idx", torch.tensor(idx, dtype=torch.long))
+
+    def forward(self, z_seq: torch.Tensor) -> torch.Tensor:
+        """z_seq: [B, N, D, W] from temporal encoder"""
+        l = self.time_proj(z_seq).permute(0, 1, 3, 2)                    # [B, N, n, D]
+        s = z_seq[:, :, :, self.seasonal_idx].permute(0, 1, 3, 2)        # [B, N, n, D]
+        c = z_seq[:, :, :, -1].unsqueeze(2)                              # [B, N, 1, D]
+        return l + self.seasonal_proj(s) + self.terminal_proj(c)
+
+
 @MODELS_REGISTRY.register("ST_GNN_heterogeneous")
 class ST_GNN_heterogeneous(nn.Module):
     """
@@ -341,6 +383,10 @@ class ST_GNN_heterogeneous(nn.Module):
                 )
                 self.time_attn_bus = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, temporal_dropout)
                 self.time_attn_gen = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, temporal_dropout)
+            elif self.temporal_decoder == "seasonal_skip":
+                period = getattr(args.model, "seasonal_period", 24)
+                self.time_seasonal_bus = SeasonalSkipTimeDecoder(self.latent_dim, temporal_window, self.n, period)
+                self.time_seasonal_gen = SeasonalSkipTimeDecoder(self.latent_dim, temporal_window, self.n, period)
             else:
                 self.time_proj_bus = nn.Linear(temporal_window, self.n)
                 self.time_proj_gen = nn.Linear(temporal_window, self.n)
@@ -428,6 +474,9 @@ class ST_GNN_heterogeneous(nn.Module):
             if self.temporal_decoder == "cross_attention":
                 z_bus_trans = self.time_attn_bus(z_bus_seq)
                 z_gen_trans = self.time_attn_gen(z_gen_seq)
+            elif self.temporal_decoder == "seasonal_skip":
+                z_bus_trans = self.time_seasonal_bus(z_bus_seq)
+                z_gen_trans = self.time_seasonal_gen(z_gen_seq)
             else:
                 z_bus_trans = self.time_proj_bus(z_bus_seq).permute(0, 1, 3, 2)
                 z_gen_trans = self.time_proj_gen(z_gen_seq).permute(0, 1, 3, 2)
