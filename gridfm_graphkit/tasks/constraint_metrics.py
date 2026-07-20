@@ -225,7 +225,7 @@ def per_type_from_opf_batch(output, batch, branch_flow_layer, tol: float = 1e-5)
     thermal_mag = torch.clamp(s_line - rate_line, min=0.0)
     per_type["thermal"] = (thermal_mag[valid_rate], line_scen[valid_rate])
 
-    # --- Angle diff (signed va_from - va_to, degrees, two-sided) ---
+    # --- Angle diff (signed va_from - va_to, degrees, two-sided, checked against the pglib limits (usually 30 degrees)) ---
     va_deg = output["bus"][:, VA_OUT] * (180.0 / torch.pi)
     ang_diff = va_deg[edge_index[0, :half]] - va_deg[edge_index[1, :half]]
     ang_min = edge_attr[:half, ANG_MIN]
