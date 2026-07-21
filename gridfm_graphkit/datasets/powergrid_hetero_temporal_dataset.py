@@ -20,12 +20,72 @@ Each sample returns:
 import os.path as osp
 from typing import List, Tuple, Optional, Callable, Sequence
 
+import numpy as np
+import pandas as pd
 import torch
 from tqdm import tqdm
 from torch_geometric.data import HeteroData, Batch
 
 from gridfm_graphkit.datasets.powergrid_hetero_dataset import HeteroGridDatasetDisk
 from gridfm_graphkit.datasets.normalizers import Normalizer
+
+def build_cyclical_time_table(
+    T: int,
+    start_date: str = "2019-01-01",
+    frequency: str = "h",
+) -> torch.Tensor:
+    """Precompute the [T, 6] cyclical calendar-feature lookup table.
+
+    - Row t = features for the timestep at ``start_date + t * frequency``.
+    - Indexed at collate time by each graph's global ``scenario_id`` (which is
+      the chronological hour offset, verified scenario_id == load_scenario_idx).
+    - Matches XGB's ``generate_cyclical_features`` exactly
+      (phase1_baseline/src/data_processing.py) so both arms see identical
+      calendar encodings.
+
+    Columns: [hour_sin, hour_cos, dow_sin, dow_cos, doy_sin, doy_cos].
+    """
+    dates = pd.date_range(start=start_date, periods=T, freq=frequency)
+    df = pd.DataFrame({"date": dates})
+    hour = df["date"].dt.hour
+    dow = df["date"].dt.dayofweek
+    doy = df["date"].dt.dayofyear
+
+    df["hour_sin"] = np.sin(2 * np.pi * hour / 24.0)
+    df["hour_cos"] = np.cos(2 * np.pi * hour / 24.0)
+    df["dow_sin"] = np.sin(2 * np.pi * dow / 7.0)
+    df["dow_cos"] = np.cos(2 * np.pi * dow / 7.0)
+    df["doy_sin"] = np.sin(2 * np.pi * doy / 365.25)
+    df["doy_cos"] = np.cos(2 * np.pi * doy / 365.25)
+
+    cols = ["hour_sin", "hour_cos", "dow_sin", "dow_cos", "doy_sin", "doy_cos"]
+    return torch.from_numpy(df[cols].values.astype(np.float32))
+
+
+def _append_time_features(
+    folded_batch: Batch,
+    window_graphs: List[HeteroData],
+    N_bus: int,
+    time_features_table: torch.Tensor,
+) -> None:
+    """Append broadcast cyclical features to folded_batch bus.x in-place.
+
+    - ``window_graphs`` is the flat sample-major/time-minor list of the B*W
+      window graphs, in the exact order their bus nodes appear in folded_batch.
+    - Each graph's [6] features are broadcast to all N_bus buses.
+    - Concatenated at columns 15..20; base indices are untouched, so the
+      index-based normalizer and all downstream ``.view(..., -1)`` reshapes are
+      unaffected.
+    """
+    scenario_ids = torch.tensor(
+        [int(g["scenario_id"]) for g in window_graphs], dtype=torch.long
+    )  # [B*W]
+    tf = time_features_table[scenario_ids]  # [B*W, 6]
+    tf_nodes = tf.repeat_interleave(N_bus, dim=0)  # [B*W*N_bus, 6]
+    bus_x = folded_batch["bus"].x
+    folded_batch["bus"].x = torch.cat(
+        [bus_x, tf_nodes.to(bus_x.dtype)], dim=1
+    )
 
 
 class HeteroGridTemporalDatasetDisk(HeteroGridDatasetDisk):
@@ -230,6 +290,7 @@ class HeteroGridTemporalDatasetDisk(HeteroGridDatasetDisk):
 
 def collate_temporal(
     batch_list: List[Tuple[List[HeteroData], List[HeteroData]]],
+    time_features_table: Optional[torch.Tensor] = None,
 ) -> dict:
     """
     Custom collate function for HeteroGridTemporalDatasetDisk.
@@ -278,6 +339,12 @@ def collate_temporal(
     folded_batch = Batch.from_data_list(all_window_graphs)
     target_batch = Batch.from_data_list(all_target_graphs)
 
+    # Ablation: append broadcast cyclical time features to the lookback window.
+    if time_features_table is not None:
+        _append_time_features(
+            folded_batch, all_window_graphs, N_bus, time_features_table
+        )
+
     return {
         "folded_batch": folded_batch,
         "target_batch": target_batch,
@@ -290,6 +357,7 @@ def collate_temporal(
 
 def collate_temporal_window_norm(
     batch_list: List[Tuple[List[HeteroData], List[HeteroData]]],
+    time_features_table: Optional[torch.Tensor] = None,
 ) -> dict:
     """
     Collate function for HeteroGridTemporalDatasetDisk when using
@@ -339,6 +407,13 @@ def collate_temporal_window_norm(
     HeteroDataWindowMVANormalizer.apply_window_power_norm(
         folded_batch, target_batch, window_baseMVA, W, n, N_bus, N_gen,
     )
+
+    # Ablation: append broadcast cyclical time features to the lookback window
+    # (after power norm; time features are pre-scaled and left untouched).
+    if time_features_table is not None:
+        _append_time_features(
+            folded_batch, all_window_graphs, N_bus, time_features_table
+        )
 
     return {
         "folded_batch":   folded_batch,
