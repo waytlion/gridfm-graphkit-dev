@@ -12,6 +12,7 @@ fitting and temporal-split logic.  Differences:
 """
 
 import os
+from functools import partial
 from torch.utils.data import DataLoader
 
 from gridfm_graphkit.io.param_handler import get_task_transforms
@@ -20,6 +21,7 @@ from gridfm_graphkit.datasets.hetero_powergrid_forecast_datamodule import (
 )
 from gridfm_graphkit.datasets.powergrid_hetero_temporal_dataset import (
     HeteroGridTemporalDatasetDisk,
+    build_cyclical_time_table,
     collate_temporal,
     collate_temporal_window_norm,
 )
@@ -56,14 +58,44 @@ class LitGridHeteroTemporalDataModule(LitGridHeteroForecastDataModule):
             transform=get_task_transforms(args=self.args),
         )
 
+    def _build_time_features_table(self):
+        """Build (and cache) the [T, 6] cyclical time-feature table if enabled.
+
+        Toggle ``data.append_time_features`` (default ON). When on, the table is
+        sized to the longest scenario timeline across networks and indexed at
+        collate time by each graph's chronological ``scenario_id``. Returns None
+        when explicitly disabled (``append_time_features: false``).
+        """
+        if not getattr(self.args.data, "append_time_features", True):
+            return None
+        if getattr(self, "_time_features_table", None) is None:
+            # Longest chronological timeline across networks (scenario_id is a
+            # global hour offset from the shared start_date).
+            T = max(
+                int(getattr(ds, "_total_scenarios", len(ds)))
+                for ds in self.datasets
+            )
+            start_date = getattr(self.args.data, "time_feature_start_date", "2019-01-01")
+            frequency = getattr(self.args.data, "time_feature_frequency", "h")
+            self._time_features_table = build_cyclical_time_table(
+                T, start_date=start_date, frequency=frequency
+            )
+        return self._time_features_table
+
     def _get_collate_fn(self):
         """Return the appropriate collate function based on the normalizer type."""
         from gridfm_graphkit.datasets.normalizers import HeteroDataWindowMVANormalizer
         if self.data_normalizers and isinstance(
             self.data_normalizers[0], HeteroDataWindowMVANormalizer
         ):
-            return collate_temporal_window_norm
-        return collate_temporal
+            base_collate = collate_temporal_window_norm
+        else:
+            base_collate = collate_temporal
+
+        time_features_table = self._build_time_features_table()
+        if time_features_table is not None:
+            return partial(base_collate, time_features_table=time_features_table)
+        return base_collate
 
     # ------------------------------------------------------------------
     # DataLoaders — use torch DataLoader + collate_temporal

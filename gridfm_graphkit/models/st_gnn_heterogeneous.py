@@ -21,11 +21,14 @@ from gridfm_graphkit.datasets.globals import (
     PD_H, QD_H,
     MIN_VM_H, MAX_VM_H,
     MIN_PG, MAX_PG,
+    MIN_QG_H, MAX_QG_H,
+    N_TIME_FEATURES,
 )
 
 # Forecast output indices (5-dim bus: [Pd, Qd, Qg, Vm, Va])
 FORECAST_VM_IDX = 3
 FORECAST_PG_IDX = 0
+FORECAST_QG_IDX = 2
 
 # Default exogenous feature indices from bus x_dict
 DEFAULT_EXO_BUS_INDICES = [PD_H, QD_H]
@@ -50,7 +53,14 @@ class UnmaskedSpatialEncoder(nn.Module):
 
         self.num_layers = args.model.num_layers
         self.hidden_dim = args.model.hidden_size
-        self.input_bus_dim = args.model.input_bus_dim
+        # input_bus_dim in configs is the base physical bus-feature dim (15).
+        # Cyclical time features (default ON) are appended by the temporal
+        # collate, so widen the input projection by N_TIME_FEATURES to match.
+        # Opt out per-config via data.append_time_features: false.
+        self.append_time_features = getattr(args.data, "append_time_features", True)
+        self.input_bus_dim = args.model.input_bus_dim + (
+            N_TIME_FEATURES if self.append_time_features else 0
+        )
         self.input_gen_dim = args.model.input_gen_dim
         self.edge_dim = args.model.edge_dim
         self.heads = args.model.attention_head
@@ -492,12 +502,21 @@ class ST_GNN_heterogeneous(nn.Module):
         max_vm = target_bus_x_full[..., MAX_VM_H]
         min_pg = target_gen_x_full[..., MIN_PG]    # [B, N_gen, n]
         max_pg = target_gen_x_full[..., MAX_PG]
+        min_qg = target_bus_x_full[..., MIN_QG_H]     # [B, N_bus, n]
+        max_qg = target_bus_x_full[..., MAX_QG_H]
+
+        # gen-bus mask (PV|REF), same flat layout as bus.x -> [B, N_bus, n_target]
+        gen_mask = (target_batch.mask_dict["PV"] | target_batch.mask_dict["REF"])
+        gen_mask = gen_mask.view(B, n_target, N_bus).permute(0, 2, 1)
 
         if one_step:
             min_vm = min_vm[:, :, step_index:step_index + 1]
             max_vm = max_vm[:, :, step_index:step_index + 1]
             min_pg = min_pg[:, :, step_index:step_index + 1]
             max_pg = max_pg[:, :, step_index:step_index + 1]
+            min_qg = min_qg[:, :, step_index:step_index + 1]
+            max_qg = max_qg[:, :, step_index:step_index + 1]
+            gen_mask = gen_mask[:, :, step_index:step_index + 1]
 
         ## out-of-place ops (torch.cat / reassignment) instead of in-place index
         ## assignment because in place leads to -> runtimeError (due to pytorch precompile)
@@ -509,10 +528,16 @@ class ST_GNN_heterogeneous(nn.Module):
         vm_bounded = bound_with_sigmoid(
             raw_forecast_bus[..., FORECAST_VM_IDX], min_vm, max_vm,
         ).unsqueeze(-1)
+
+        # Qg: bound only at generator buses (PV|REF); leave PQ raw (not a decision var, keeps physics-loss self-consistency)
+        qg_raw = raw_forecast_bus[..., FORECAST_QG_IDX]
+        qg_bounded = torch.where(gen_mask, bound_with_sigmoid(qg_raw, min_qg, max_qg), qg_raw)
+
         final_forecast_bus = torch.cat([
-            raw_forecast_bus[..., :FORECAST_VM_IDX],
-            vm_bounded,
-            raw_forecast_bus[..., FORECAST_VM_IDX + 1:],
+            raw_forecast_bus[..., :FORECAST_QG_IDX],   # Pd, Qd
+            qg_bounded.unsqueeze(-1),                   # Qg  (bounded @ gen buses)
+            vm_bounded,                                 # Vm
+            raw_forecast_bus[..., FORECAST_VM_IDX + 1:],# Va
         ], dim=-1)
 
         if torch._dynamo.is_compiling():

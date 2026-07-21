@@ -17,6 +17,20 @@ GS = 12  # Shunt conductance (p.u.)
 BS = 13  # Shunt susceptance (p.u.)
 VN_KV = 14  # Nominal voltage
 
+# =========================================================
+# === CYCLICAL TIME FEATURES (ablation, appended to bus x) =
+# =========================================================
+# Optional global calendar features broadcast to every bus at every lookback
+# timestep. Appended AFTER the 15 base features so all indices above are
+# unchanged. Toggled by data.append_time_features (default off).
+N_TIME_FEATURES = 6  # [hour_sin, hour_cos, dow_sin, dow_cos, doy_sin, doy_cos]
+HOUR_SIN = 15
+HOUR_COS = 16
+DOW_SIN = 17
+DOW_COS = 18
+DOY_SIN = 19
+DOY_COS = 20
+
 # =========================
 # === OUTPUT FEATURE INDICES ==
 # =========================
