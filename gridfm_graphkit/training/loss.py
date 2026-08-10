@@ -366,8 +366,9 @@ class ST_ForecastBusMSE(BaseLoss):
     Weighted MSE for ST-GNN bus forecast output.
 
     Splits the 5-dim bus prediction [Pd, Qd, Qg, Vm, Va] into:
-        - load component (Pd, Qd):  indices [0:2], weighted by lambda_load
-        - OPF component  (Qg, Vm, Va): indices [2:5], weighted by lambda_opf
+        - load component (Pd):    index  [0:1], weighted by lambda_load
+        - OPF component  (Vm, Va): indices [3:5], weighted by lambda_opf
+    Qd (index 1) and Qg (index 2) are excluded from the loss (derived quantities)
 
     Expected shapes:
         pred["bus"]:   [B, N_bus, n, 5]
@@ -392,15 +393,15 @@ class ST_ForecastBusMSE(BaseLoss):
             scaled_bus_target = target["bus"].clone()
             scaled_bus_pred[..., 0:3] = scaled_bus_pred[..., 0:3] * scaled_baseMVA
             scaled_bus_target[..., 0:3] = scaled_bus_target[..., 0:3] * scaled_baseMVA
-            pred_load = scaled_bus_pred[..., 0:2]
-            target_load = scaled_bus_target[..., 0:2]
-            pred_opf = scaled_bus_pred[..., 2:5]
-            target_opf = scaled_bus_target[..., 2:5]
+            pred_load = scaled_bus_pred[..., 0:1]
+            target_load = scaled_bus_target[..., 0:1]
+            pred_opf = scaled_bus_pred[..., 3:5]
+            target_opf = scaled_bus_target[..., 3:5]
         else:
-            pred_load = pred["bus"][..., 0:2]
-            target_load = target["bus"][..., 0:2]
-            pred_opf = pred["bus"][..., 2:5]
-            target_opf = target["bus"][..., 2:5]
+            pred_load = pred["bus"][..., 0:1]
+            target_load = target["bus"][..., 0:1]
+            pred_opf = pred["bus"][..., 3:5]
+            target_opf = target["bus"][..., 3:5]
 
         def weighted_mse(pred_t, target_t):
             mse_per_t = ((pred_t - target_t) ** 2).mean(dim=(0, 1, 3))
@@ -415,14 +416,14 @@ class ST_ForecastBusMSE(BaseLoss):
             weights = weights / weight_sum
             return (mse_per_t * weights).sum()
 
-        loss_load = weighted_mse(pred_load, target_load) # [B, N_bus, n, 2]: Pd, Qd
-        loss_opf = weighted_mse(pred_opf, target_opf)   # [B, N_bus, n, 3]: Qg, Vm, Va
+        loss_load = weighted_mse(pred_load, target_load) # [B, N_bus, n, 1]: Pd
+        loss_opf = weighted_mse(pred_opf, target_opf)   # [B, N_bus, n, 2]: Vm, Va
         total = self.lambda_load * loss_load + self.lambda_opf * loss_opf
 
         return {
             "loss": total,
-            "ST load MSE (Pd,Qd)": loss_load.detach(),
-            "ST OPF MSE (Qg,Vm,Va)": loss_opf.detach(),
+            "ST load MSE (Pd)": loss_load.detach(),
+            "ST OPF MSE (Vm,Va)": loss_opf.detach(),
         }
 
 

@@ -36,12 +36,12 @@ def build_cyclical_time_table(
 ) -> torch.Tensor:
     """Precompute the [T, 6] cyclical calendar-feature lookup table.
 
-    - Row t = features for the timestep at ``start_date + t * frequency``.
+    - Row t = features for the timestep at ``start_date + t * frequency``
     - Indexed at collate time by each graph's global ``scenario_id`` (which is
-      the chronological hour offset, verified scenario_id == load_scenario_idx).
-    - Matches XGB's ``generate_cyclical_features`` exactly
+      the chronological hour offset, verified scenario_id == load_scenario_idx)
+    - For Tils Thesis: Matches XGB's ``generate_cyclical_features`` exactly
       (phase1_baseline/src/data_processing.py) so both arms see identical
-      calendar encodings.
+      calendar encodings
 
     Columns: [hour_sin, hour_cos, dow_sin, dow_cos, doy_sin, doy_cos].
     """
@@ -339,7 +339,7 @@ def collate_temporal(
     folded_batch = Batch.from_data_list(all_window_graphs)
     target_batch = Batch.from_data_list(all_target_graphs)
 
-    # Ablation: append broadcast cyclical time features to the lookback window.
+    #  append cyclical time features to the lookback window
     if time_features_table is not None:
         _append_time_features(
             folded_batch, all_window_graphs, N_bus, time_features_table
@@ -408,7 +408,7 @@ def collate_temporal_window_norm(
         folded_batch, target_batch, window_baseMVA, W, n, N_bus, N_gen,
     )
 
-    # Ablation: append broadcast cyclical time features to the lookback window
+    #  append cyclical time features to the lookback window
     # (after power norm; time features are pre-scaled and left untouched).
     if time_features_table is not None:
         _append_time_features(
