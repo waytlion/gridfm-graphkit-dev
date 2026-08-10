@@ -15,20 +15,26 @@ import torch.nn as nn
 from torch_geometric.nn import HeteroConv, TransformerConv
 
 from gridfm_graphkit.io.registries import MODELS_REGISTRY
-from gridfm_graphkit.models.utils import bound_with_sigmoid
+from gridfm_graphkit.models.utils import bound_with_sigmoid, ComputeBranchFlow, ComputeNodeInjection
 from gridfm_graphkit.models.temporal_encoders import TCN, TemporalTransformerEncoder, TemporalTransformerDecoder
 from gridfm_graphkit.datasets.globals import (
     PD_H, QD_H,
     MIN_VM_H, MAX_VM_H,
     MIN_PG, MAX_PG,
-    MIN_QG_H, MAX_QG_H,
+    BS,
     N_TIME_FEATURES,
 )
 
-# Forecast output indices (5-dim bus: [Pd, Qd, Qg, Vm, Va])
-FORECAST_VM_IDX = 3
-FORECAST_PG_IDX = 0
-FORECAST_QG_IDX = 2
+# Raw bus decoder output (3-dim: only quantities learned).
+# Qd (= Pd * fixed per-bus Q/P ratio) and Qg (reactive balance) are derived in
+# forward(), not predicted 
+RAW_PD_IDX = 0
+RAW_VM_IDX = 1
+RAW_VA_IDX = 2
+BUS_DECODER_DIM = 3
+
+# Final bus output layout (5-dim): [Pd, Qd, Qg, Vm, Va]
+FORECAST_PG_IDX = 0  # gen decoder output index (1-dim: [Pg])
 
 # Default exogenous feature indices from bus x_dict
 DEFAULT_EXO_BUS_INDICES = [PD_H, QD_H]
@@ -53,10 +59,9 @@ class UnmaskedSpatialEncoder(nn.Module):
 
         self.num_layers = args.model.num_layers
         self.hidden_dim = args.model.hidden_size
-        # input_bus_dim in configs is the base physical bus-feature dim (15).
-        # Cyclical time features (default ON) are appended by the temporal
-        # collate, so widen the input projection by N_TIME_FEATURES to match.
-        # Opt out per-config via data.append_time_features: false.
+        # input_bus_dim in configs is the base physical bus-feature dim (15)
+        # Cyclical time features (default TRUE) are appended by the temporal
+        # collate, so widen the input projection by N_TIME_FEATURES to match
         self.append_time_features = getattr(args.data, "append_time_features", True)
         self.input_bus_dim = args.model.input_bus_dim + (
             N_TIME_FEATURES if self.append_time_features else 0
@@ -266,7 +271,9 @@ class ST_GNN_heterogeneous(nn.Module):
         self.latent_dim = hidden_dim * heads
         temporal_window = args.data.temporal_window
         temporal_dropout = getattr(args.model, "dropout", 0.0)
-        self.forecast_bus_dim = args.model.output_bus_dim  # [Pd, Qd, Qg, Vm, Va]
+        # NOTE: args.model.output_bus_dim (5) describes the *final* bus output
+        # [Pd, Qd, Qg, Vm, Va]; the decoder itself only predicts BUS_DECODER_DIM
+        # raw values (Pd, Vm, Va) -- Qd and Qg are derived in forward().
         self.forecast_gen_dim = args.model.output_gen_dim  # [Pg]
         # Step embeddings default to 0 
         self.step_embeddings = None
@@ -383,15 +390,19 @@ class ST_GNN_heterogeneous(nn.Module):
         if self.forecast_decoder_mode == "per_horizon":
             # Instantiate n independent MLPs
             self.forecast_decoders_bus = nn.ModuleList([
-                build_decoder(bus_decoder_in, self.forecast_bus_dim) for _ in range(self.n)
+                build_decoder(bus_decoder_in, BUS_DECODER_DIM) for _ in range(self.n)
             ])
             self.forecast_decoders_gen = nn.ModuleList([
                 build_decoder(gen_decoder_in, self.forecast_gen_dim) for _ in range(self.n)
             ])
         else:
             # Shared MLP across all horizon steps
-            self.forecast_decoder_bus = build_decoder(bus_decoder_in, self.forecast_bus_dim)
+            self.forecast_decoder_bus = build_decoder(bus_decoder_in, BUS_DECODER_DIM)
             self.forecast_decoder_gen = build_decoder(gen_decoder_in, self.forecast_gen_dim)
+
+        # physics layers for Qg derivation (reactive balance); reused from the physics loss
+        self.branch_flow_layer = ComputeBranchFlow()
+        self.node_injection_layer = ComputeNodeInjection()
 
     def forward(self, folded_batch, target_batch, B, W, N_bus, one_step: bool = False, step_index: int = 0):
         """
@@ -404,6 +415,7 @@ class ST_GNN_heterogeneous(nn.Module):
         Returns:
             dict with:
                 "bus": [B, N_bus, n, 5]  forecast [Pd, Qd, Qg, Vm, Va]
+                        (only Pd, Vm, Va are predicted; Qd and Qg are derived)
                 "gen": [B, N_gen, n, 1]  forecast [Pg]
         """
         D = self.latent_dim
@@ -474,7 +486,7 @@ class ST_GNN_heterogeneous(nn.Module):
             else:
                 raw_forecast_bus = torch.stack([
                     self.forecast_decoders_bus[k](z_bus_cond[:, :, k, :]) for k in range(n)
-                ], dim=2)  # [B, N_bus, n, 5]
+                ], dim=2)  # [B, N_bus, n, 3]: [Pd, Vm, Va]
 
                 raw_forecast_gen = torch.stack([
                     self.forecast_decoders_gen[k](z_gen_cond[:, :, k, :]) for k in range(n)
@@ -502,21 +514,11 @@ class ST_GNN_heterogeneous(nn.Module):
         max_vm = target_bus_x_full[..., MAX_VM_H]
         min_pg = target_gen_x_full[..., MIN_PG]    # [B, N_gen, n]
         max_pg = target_gen_x_full[..., MAX_PG]
-        min_qg = target_bus_x_full[..., MIN_QG_H]     # [B, N_bus, n]
-        max_qg = target_bus_x_full[..., MAX_QG_H]
-
-        # gen-bus mask (PV|REF), same flat layout as bus.x -> [B, N_bus, n_target]
-        gen_mask = (target_batch.mask_dict["PV"] | target_batch.mask_dict["REF"])
-        gen_mask = gen_mask.view(B, n_target, N_bus).permute(0, 2, 1)
-
         if one_step:
             min_vm = min_vm[:, :, step_index:step_index + 1]
             max_vm = max_vm[:, :, step_index:step_index + 1]
             min_pg = min_pg[:, :, step_index:step_index + 1]
             max_pg = max_pg[:, :, step_index:step_index + 1]
-            min_qg = min_qg[:, :, step_index:step_index + 1]
-            max_qg = max_qg[:, :, step_index:step_index + 1]
-            gen_mask = gen_mask[:, :, step_index:step_index + 1]
 
         ## out-of-place ops (torch.cat / reassignment) instead of in-place index
         ## assignment because in place leads to -> runtimeError (due to pytorch precompile)
@@ -526,18 +528,60 @@ class ST_GNN_heterogeneous(nn.Module):
         final_forecast_gen = pg_bounded
 
         vm_bounded = bound_with_sigmoid(
-            raw_forecast_bus[..., FORECAST_VM_IDX], min_vm, max_vm,
-        ).unsqueeze(-1)
+            raw_forecast_bus[..., RAW_VM_IDX], min_vm, max_vm,
+        )  # [B, N_bus, n]
+        pd_pred = raw_forecast_bus[..., RAW_PD_IDX]  # Pd (unbounded, learned)
+        va_pred = raw_forecast_bus[..., RAW_VA_IDX]  # Va (unbounded, learned)
 
-        # Qg: bound only at generator buses (PV|REF); leave PQ raw (not a decision var, keeps physics-loss self-consistency)
-        qg_raw = raw_forecast_bus[..., FORECAST_QG_IDX]
-        qg_bounded = torch.where(gen_mask, bound_with_sigmoid(qg_raw, min_qg, max_qg), qg_raw)
+        # --- Qd derived from a fixed per-bus Q/P ratio (dependent quantity, not predicted) ---
+        # By dataset construction Qd = Pd * (Q_base/P_base) at every scenario and
+        # timestep for a given bus (both were scaled by the same load-profile
+        # multiplier off the same pglib base case), so the ratio is exactly
+        # recoverable from any single known historical (lookback) snapshot 
+        # Pick, per bus, the lookback timestep with
+        # the largest |Pd| to not divide by 0
+        pd_hist = folded_batch.x_dict["bus"][:, PD_H].view(B, W, N_bus)
+        qd_hist = folded_batch.x_dict["bus"][:, QD_H].view(B, W, N_bus)
+        ref_t = pd_hist.abs().argmax(dim=1, keepdim=True)  # [B, 1, N_bus]
+        pd_ref = pd_hist.gather(1, ref_t).squeeze(1)  # [B, N_bus]
+        qd_ref = qd_hist.gather(1, ref_t).squeeze(1)  # [B, N_bus]
+        qp_ratio = torch.where(
+            pd_ref.abs() > 1e-6, qd_ref / pd_ref, torch.zeros_like(pd_ref),
+        )  # [B, N_bus]
+        qd_derived = pd_pred * qp_ratio.unsqueeze(-1)  # [B, N_bus, n]
+
+        # --- Qg derived from reactive power balance (dependent quantity, not predicted) ---
+        # Qg = Q_in + Qd - q_shunt at generator (PV|REF) buses; 0 at PQ buses.
+        # Reuses physics layers on the predicted Vm, Va, matching the physics
+        # loss so the gen-bus reactive residual is zero by construction 
+
+        # [B, N_bus, n] -> [B*n*N_bus] 
+        vm_flat = vm_bounded.permute(0, 2, 1).reshape(-1)
+        va_flat = va_pred.permute(0, 2, 1).reshape(-1)
+        qd_flat = qd_derived.permute(0, 2, 1).reshape(-1)
+
+        edge_index_bb = target_batch.edge_index_dict[("bus", "connects", "bus")]
+        edge_attr_bb = target_batch.edge_attr_dict[("bus", "connects", "bus")]
+        num_bus_total = B * n * N_bus
+
+        bus_vm_va = torch.stack([vm_flat, va_flat], dim=-1)  # cols [VM_OUT=0, VA_OUT=1]
+        Pft, Qft = self.branch_flow_layer(bus_vm_va, edge_index_bb, edge_attr_bb)
+        _, Q_in = self.node_injection_layer(Pft, Qft, edge_index_bb, num_bus_total)
+
+        q_shunt = target_batch["bus"].x[:, BS] * vm_flat ** 2
+        qg_flat = Q_in + qd_flat - q_shunt
+
+        gen_mask_flat = target_batch.mask_dict["PV"] | target_batch.mask_dict["REF"]
+        qg_flat = torch.where(gen_mask_flat, qg_flat, torch.zeros_like(qg_flat))
+
+        qg_derived = qg_flat.view(B, n, N_bus).permute(0, 2, 1)  # [B, N_bus, n]
 
         final_forecast_bus = torch.cat([
-            raw_forecast_bus[..., :FORECAST_QG_IDX],   # Pd, Qd
-            qg_bounded.unsqueeze(-1),                   # Qg  (bounded @ gen buses)
-            vm_bounded,                                 # Vm
-            raw_forecast_bus[..., FORECAST_VM_IDX + 1:],# Va
+            pd_pred.unsqueeze(-1),      # Pd  (learned)
+            qd_derived.unsqueeze(-1),   # Qd  (derived from Pd via fixed Q/P ratio)
+            qg_derived.unsqueeze(-1),   # Qg  (derived from reactive balance)
+            vm_bounded.unsqueeze(-1),   # Vm  (bounded)
+            va_pred.unsqueeze(-1),      # Va  (learned)
         ], dim=-1)
 
         if torch._dynamo.is_compiling():
