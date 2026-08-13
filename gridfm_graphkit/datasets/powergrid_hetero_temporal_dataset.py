@@ -39,7 +39,7 @@ def build_cyclical_time_table(
     - Row t = features for the timestep at ``start_date + t * frequency``
     - Indexed at collate time by each graph's global ``scenario_id`` (which is
       the chronological hour offset, verified scenario_id == load_scenario_idx)
-    - For Tils Thesis: Matches XGB's ``generate_cyclical_features`` exactly
+    - For Thesis: Matches XGB's ``generate_cyclical_features`` exactly
       (phase1_baseline/src/data_processing.py) so both arms see identical
       calendar encodings
 
