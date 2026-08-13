@@ -137,16 +137,10 @@ class ConstraintViolationAccumulator:
 
 
 def per_bus_type_mae(output: dict, target: dict, batch) -> dict:
-    """MAE (L1) mirroring opf_task.py's frozen per-bus-type MSE block (co-owned;
-    that file's writer/metric core is not touched — see AGENTS.md). Uses the
-    identical masks/columns as the existing "MSE {type} nodes - {FEAT}" metrics
-    so RMSE (from those) and MAE (from these) are directly comparable.
+    """MAE (L1) mirroring opf_task.py per bus type MSE 
 
     Called from each arm's own hook / call site (surrogate: _after_opf_metrics;
-    E2E: inline after _compute_opf_metrics) with the same OPF-format
-    output/target it already has in hand. Returns a dict of tensors meant to be
-    merged into that call's self.log() loop under the returned key names —
-    canonical_scalar_rows()'s ``agg()`` reads them back by the same names.
+    E2E: inline after _compute_opf_metrics) 
     """
     mask_PQ = batch.mask_dict["PQ"]
     mask_PV = batch.mask_dict["PV"]
@@ -163,9 +157,6 @@ def per_bus_type_mae(output: dict, target: dict, batch) -> dict:
 
 
 def bus_type_counts(batch) -> dict:
-    """Per-bus-type node counts from batch.mask_dict, for the count-weighted
-    (per-bus-equal) collapse in canonical_scalar_rows. Ratios are grid-constant,
-    so any test batch yields correct relative weights."""
     return {t: int(batch.mask_dict[t].sum()) for t in ("PQ", "PV", "REF")}
 
 
@@ -177,22 +168,18 @@ def canonical_scalar_rows(
     qd_rmse: float,
     counts: dict,
 ) -> list:
-    """Canonical scalar rows shared by the surrogate and E2E arms, in report order:
-    optimality gap, physics residual, then MAE+RMSE interleaved per variable for
-    every important OPF quantity (Pd, Qd, Vm, Va, Pg, Qg), then per-generator Pg
-    as a finer-grained extra. Metric names matching compare.py's exhaustive file
-    are kept verbatim (un-prefixed) so aggregate_results.py's cross-arm join by
-    name keeps working; new names (Qd, Vm/Va/Qg MAE, Qg RMSE) have no compare.py
-    counterpart yet and simply won't join across arms.
-
+    """shared by the surrogate and E2E arms
+    
+     Metric names matching 2-step arms "compare.py"
+    
     ``m`` is one dataset's grouped callback_metrics: base "MSE {type} nodes - X"
     keys (co-owned opf_task.py) + "MAE {type} nodes - X" keys (per_bus_type_mae,
-    self-logged by the caller). Va is converted rad->deg to match compare.py.
+    self-logged by the caller). 
+    - Va is converted rad->deg to match compare.py
 
     ``counts`` is per-bus-type node counts ({PQ,PV,REF} -> int, from
     bus_type_counts): the per-type MSE/MAE means are collapsed weighted by these
-    so every BUS counts equally (per-bus-equal), not every bus TYPE (which
-    over-weighted the single REF/slack bus ~40x). Matches compare.py.
+    so every BUS counts equally (per-bus-equal), 
 
     Pd/Qd MAE/RMSE are computed differently per arm (surrogate: forecast vs true
     realized load; E2E: its own forecast vs true), so they're passed in rather
@@ -209,8 +196,7 @@ def canonical_scalar_rows(
 
     def agg(prefix, feat, scale=1.0, sqrt=False):
         # Count-weighted collapse of per-type means. For RMSE (sqrt=True) the
-        # per-type value is MSE, so sum(n*MSE)/sum(n) is the exact pooled MSE ->
-        # sqrt gives the pooled RMSE (sqrt AFTER pooling, not per-type).
+        # per-type value is MSE, so sum(n*MSE)/sum(n) is the exact pooled MSE 
         num = den = 0.0
         for t in ("PQ", "PV", "REF"):
             v, w = g(f"{prefix} {t} nodes - {feat}"), counts.get(t, 0)
