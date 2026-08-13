@@ -23,6 +23,8 @@ from gridfm_graphkit.tasks.perbus_residual_dump import PerBusResidualAccumulator
 from gridfm_graphkit.tasks.constraint_metrics import (
     ConstraintViolationAccumulator,
     per_type_from_opf_batch,
+    per_bus_type_mae,
+    bus_type_counts,
     canonical_scalar_rows,
 )
 from gridfm_graphkit.datasets.globals import (
@@ -67,6 +69,9 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         # Canonical constraint-violation accumulators (per network)
         self._branch_flow = ComputeBranchFlow()
         self._viol_acc = {i: ConstraintViolationAccumulator() for i in range(len(args.data.networks))}
+        # Per-bus-type node counts (grid-constant) captured per network during the
+        # test pass, for the per-bus-equal metric collapse in canonical_scalar_rows.
+        self._bus_type_counts = {}
         # Per-bus SIGNED residual dump (error-distribution plot); shared accumulator.
         self._perbus_acc = PerBusResidualAccumulator(len(args.data.networks))
 
@@ -510,6 +515,14 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         per_type, num_scen = per_type_from_opf_batch(output_opf, target_batch, self._branch_flow)
         self._viol_acc[dataloader_idx].update(per_type, num_scen)
 
+        # Vm/Va/Pg/Qg MAE, mirroring the base task's frozen per-bus-type MSE block
+        # (co-owned opf_task.py — not touched); computed on the same flattened
+        # [B*n*N_bus] OPF-format tensors as the MSE above, so RMSE (from those
+        # existing keys) and MAE (from these) stay directly comparable. Merged
+        # into opf_metrics so it logs through the loop below like everything else.
+        opf_metrics.update(per_bus_type_mae(output_opf, target_opf, target_batch))
+        self._bus_type_counts[dataloader_idx] = bus_type_counts(target_batch)
+
         # Per-bus SIGNED residual dump (dispatch vs true future load in target_batch).
         # load_pred = E2E's OWN predicted load (flat_pred bus cols 0,1 = Pd,Qd,
         # denormalized), aligned with target_batch bus ordering -> forecast-space residual.
@@ -690,12 +703,18 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
             total_pg_pred = all_pred_gen[..., 0].sum().item()
             total_pg_true = all_tgt_gen[..., 0].sum().item()
 
-            # Save the specific global metrics requested for the refactored metrics.csv
+            # Save the specific global metrics requested for the refactored metrics.csv.
+            # Vm/Va/Pg(bus)/Qg MAE+RMSE and Generator Pg MAE+RMSE are NOT taken from
+            # var_metrics here — they come from the same "MSE/MAE {type} nodes - X"
+            # keys the surrogate arm uses (canonical_scalar_rows reads them straight
+            # out of ``grouped`` below), so both arms report those quantities via one
+            # consistent computation. Only Pd/Qd (var_metrics[0]/[1]) have no such
+            # shared path, since the surrogate never predicts loads at all.
             custom_csv_data[dataset_name] = {
                 "mae_pd": var_metrics[0]["mae"],
                 "rmse_pd": var_metrics[0]["rmse"],
-                "mae_pg_gen": var_metrics[5]["mae"],
-                "rmse_pg_gen": var_metrics[5]["rmse"],
+                "mae_qd": var_metrics[1]["mae"],
+                "rmse_qd": var_metrics[1]["rmse"],
                 "total_pd_pred": total_pd_pred,
                 "total_pd_true": total_pd_true,
                 "total_pg_pred": total_pg_pred,
@@ -794,13 +813,14 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                         value.item() if hasattr(value, "item") else value
                     )
 
-            rows = canonical_scalar_rows(grouped)
-            # Forecast-specific rows (not in the OPF callback metrics)
-            rows += [
-                {"Metric": "MAE Pd", "Value": custom_data["mae_pd"], "Unit": "MW"},
-                {"Metric": "RMSE Pd", "Value": custom_data["rmse_pd"], "Unit": "MW"},
-                {"Metric": "Generator Pg MAE", "Value": custom_data["mae_pg_gen"], "Unit": "MW"},
-            ]
+            rows = canonical_scalar_rows(
+                grouped,
+                pd_mae=custom_data["mae_pd"],
+                pd_rmse=custom_data["rmse_pd"],
+                qd_mae=custom_data["mae_qd"],
+                qd_rmse=custom_data["rmse_qd"],
+                counts=self._bus_type_counts.get(idx, {}),
+            )
             # Canonical constraint-violation quintet
             rows += self._viol_acc[idx].finalize_rows(prefix="")
             # E2E diagnostics + timing (kept)
@@ -822,6 +842,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
 
         # Reset accumulators for any subsequent test run.
         self._viol_acc = {i: ConstraintViolationAccumulator() for i in range(len(self.args.data.networks))}
+        self._bus_type_counts = {}
         self._perbus_acc = PerBusResidualAccumulator(len(self.args.data.networks))
 
 

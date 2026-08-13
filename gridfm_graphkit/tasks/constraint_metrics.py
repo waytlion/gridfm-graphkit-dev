@@ -25,6 +25,7 @@ not a cross-batch mean).
 """
 
 import torch
+import torch.nn.functional as F
 from torch_scatter import scatter_add
 
 from gridfm_graphkit.datasets.globals import (
@@ -135,12 +136,67 @@ class ConstraintViolationAccumulator:
         return rows
 
 
-def canonical_scalar_rows(m: dict) -> list:
-    """Map base OPF metric names (one dataset's callback_metrics) to canonical
-    scalar rows matching compare.py's exhaustive file (un-prefixed).
+def per_bus_type_mae(output: dict, target: dict, batch) -> dict:
+    """MAE (L1) mirroring opf_task.py's frozen per-bus-type MSE block (co-owned;
+    that file's writer/metric core is not touched — see AGENTS.md). Uses the
+    identical masks/columns as the existing "MSE {type} nodes - {FEAT}" metrics
+    so RMSE (from those) and MAE (from these) are directly comparable.
 
-    ``m`` is {base_metric_name: value}. Va RMSE is converted rad->deg to match
-    compare.py (graphkit carries Va in radians internally).
+    Called from each arm's own hook / call site (surrogate: _after_opf_metrics;
+    E2E: inline after _compute_opf_metrics) with the same OPF-format
+    output/target it already has in hand. Returns a dict of tensors meant to be
+    merged into that call's self.log() loop under the returned key names —
+    canonical_scalar_rows()'s ``agg()`` reads them back by the same names.
+    """
+    mask_PQ = batch.mask_dict["PQ"]
+    mask_PV = batch.mask_dict["PV"]
+    mask_REF = batch.mask_dict["REF"]
+    out = {}
+    for t_name, mask in (("PQ", mask_PQ), ("PV", mask_PV), ("REF", mask_REF)):
+        mae = F.l1_loss(output["bus"][mask], target["bus"][mask], reduction="none").mean(dim=0)
+        out[f"MAE {t_name} nodes - VM"] = mae[VM_OUT]
+        out[f"MAE {t_name} nodes - VA"] = mae[VA_OUT]
+        out[f"MAE {t_name} nodes - PG"] = mae[PG_OUT]
+        out[f"MAE {t_name} nodes - QG"] = mae[QG_OUT]
+    out["MAE PG"] = F.l1_loss(output["gen"], target["gen"], reduction="none").mean()
+    return out
+
+
+def bus_type_counts(batch) -> dict:
+    """Per-bus-type node counts from batch.mask_dict, for the count-weighted
+    (per-bus-equal) collapse in canonical_scalar_rows. Ratios are grid-constant,
+    so any test batch yields correct relative weights."""
+    return {t: int(batch.mask_dict[t].sum()) for t in ("PQ", "PV", "REF")}
+
+
+def canonical_scalar_rows(
+    m: dict,
+    pd_mae: float,
+    pd_rmse: float,
+    qd_mae: float,
+    qd_rmse: float,
+    counts: dict,
+) -> list:
+    """Canonical scalar rows shared by the surrogate and E2E arms, in report order:
+    optimality gap, physics residual, then MAE+RMSE interleaved per variable for
+    every important OPF quantity (Pd, Qd, Vm, Va, Pg, Qg), then per-generator Pg
+    as a finer-grained extra. Metric names matching compare.py's exhaustive file
+    are kept verbatim (un-prefixed) so aggregate_results.py's cross-arm join by
+    name keeps working; new names (Qd, Vm/Va/Qg MAE, Qg RMSE) have no compare.py
+    counterpart yet and simply won't join across arms.
+
+    ``m`` is one dataset's grouped callback_metrics: base "MSE {type} nodes - X"
+    keys (co-owned opf_task.py) + "MAE {type} nodes - X" keys (per_bus_type_mae,
+    self-logged by the caller). Va is converted rad->deg to match compare.py.
+
+    ``counts`` is per-bus-type node counts ({PQ,PV,REF} -> int, from
+    bus_type_counts): the per-type MSE/MAE means are collapsed weighted by these
+    so every BUS counts equally (per-bus-equal), not every bus TYPE (which
+    over-weighted the single REF/slack bus ~40x). Matches compare.py.
+
+    Pd/Qd MAE/RMSE are computed differently per arm (surrogate: forecast vs true
+    realized load; E2E: its own forecast vs true), so they're passed in rather
+    than read from ``m``.
     """
     import math
 
@@ -151,22 +207,42 @@ def canonical_scalar_rows(m: dict) -> list:
         except (TypeError, ValueError):
             return float("nan")
 
-    def rmse_agg(feat, scale=1.0):
-        vals = [g(f"MSE {t} nodes - {feat}") for t in ("PQ", "PV", "REF")]
-        vals = [v for v in vals if v == v and v >= 0.0]  # drop NaN
-        if not vals:
+    def agg(prefix, feat, scale=1.0, sqrt=False):
+        # Count-weighted collapse of per-type means. For RMSE (sqrt=True) the
+        # per-type value is MSE, so sum(n*MSE)/sum(n) is the exact pooled MSE ->
+        # sqrt gives the pooled RMSE (sqrt AFTER pooling, not per-type).
+        num = den = 0.0
+        for t in ("PQ", "PV", "REF"):
+            v, w = g(f"{prefix} {t} nodes - {feat}"), counts.get(t, 0)
+            if v == v and v >= 0.0 and w > 0:  # skip NaN / empty type
+                num += w * v
+                den += w
+        if den == 0:
             return float("nan")
-        return (sum(v ** 0.5 for v in vals) / len(vals)) * scale
+        pooled = num / den
+        return (pooled ** 0.5 if sqrt else pooled) * scale
 
-    mse_pg = g("MSE PG")
+    mse_pg, mae_pg = g("MSE PG"), g("MAE PG")
+    va_scale = 180.0 / math.pi
+
     return [
+        {"Metric": "Mean Optimality Gap", "Value": g("Opt gap"), "Unit": "%"},
         {"Metric": "Residual P (MAE)", "Value": g("Active Power Loss"), "Unit": "MW"},
         {"Metric": "Residual Q (MAE)", "Value": g("Reactive Power Loss"), "Unit": "MVAr"},
+        {"Metric": "MAE Pd", "Value": pd_mae, "Unit": "MW"},
+        {"Metric": "RMSE Pd", "Value": pd_rmse, "Unit": "MW"},
+        {"Metric": "MAE Qd", "Value": qd_mae, "Unit": "MVAr"},
+        {"Metric": "RMSE Qd", "Value": qd_rmse, "Unit": "MVAr"},
+        {"Metric": "Vm MAE", "Value": agg("MAE", "VM"), "Unit": "p.u."},
+        {"Metric": "Vm RMSE", "Value": agg("MSE", "VM", sqrt=True), "Unit": "p.u."},
+        {"Metric": "Va MAE", "Value": agg("MAE", "VA", scale=va_scale), "Unit": "deg"},
+        {"Metric": "Va RMSE", "Value": agg("MSE", "VA", scale=va_scale, sqrt=True), "Unit": "deg"},
+        {"Metric": "Pg bus MAE", "Value": agg("MAE", "PG"), "Unit": "MW"},
+        {"Metric": "Pg bus RMSE", "Value": agg("MSE", "PG", sqrt=True), "Unit": "MW"},
+        {"Metric": "Qg MAE", "Value": agg("MAE", "QG"), "Unit": "MVAr"},
+        {"Metric": "Qg RMSE", "Value": agg("MSE", "QG", sqrt=True), "Unit": "MVAr"},
+        {"Metric": "Generator Pg MAE", "Value": mae_pg, "Unit": "MW"},
         {"Metric": "Generator Pg RMSE", "Value": mse_pg ** 0.5 if mse_pg == mse_pg else float("nan"), "Unit": "MW"},
-        {"Metric": "Vm RMSE", "Value": rmse_agg("VM"), "Unit": "p.u."},
-        {"Metric": "Va RMSE", "Value": rmse_agg("VA", 180.0 / math.pi), "Unit": "deg"},
-        {"Metric": "Pg bus RMSE", "Value": rmse_agg("PG"), "Unit": "MW"},
-        {"Metric": "Mean Optimality Gap", "Value": g("Opt gap"), "Unit": "%"},
     ]
 
 

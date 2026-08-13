@@ -35,6 +35,8 @@ from gridfm_graphkit.tasks.perbus_residual_dump import PerBusResidualAccumulator
 from gridfm_graphkit.tasks.constraint_metrics import (
     ConstraintViolationAccumulator,
     per_type_from_opf_batch,
+    per_bus_type_mae,
+    bus_type_counts,
     canonical_scalar_rows,
 )
 
@@ -65,6 +67,13 @@ class OptimalPowerFlowTwoStepTask(OptimalPowerFlowTask):
             i: {"pd_pred": 0.0, "pd_true": 0.0, "pg_pred": 0.0, "pg_true": 0.0}
             for i in range(n)
         }
+        # Pd/Qd forecast-vs-true-load error (the upstream 
+        self._pdqd_err = {
+            i: {"abs_p": 0.0, "sq_p": 0.0, "abs_q": 0.0, "sq_q": 0.0, "n": 0}
+            for i in range(n)
+        }
+        # Per-bus-type node counts (grid-constant)
+        self._bus_type_counts = {}
         self._perbus_acc = PerBusResidualAccumulator(n)
 
     def _override_residual_load(self, batch):
@@ -99,6 +108,29 @@ class OptimalPowerFlowTwoStepTask(OptimalPowerFlowTask):
         t["pg_pred"] += output["gen"].sum().item()
         t["pg_true"] += target["gen"].sum().item()
 
+        # Per-bus Pd/Qd forecast error
+        true_load = batch["bus"].true_load
+        err = self._pending_forecast_bus - true_load
+        d = self._pdqd_err[dataloader_idx]
+        d["abs_p"] += err[:, 0].abs().sum().item()
+        d["sq_p"] += (err[:, 0] ** 2).sum().item()
+        d["abs_q"] += err[:, 1].abs().sum().item()
+        d["sq_q"] += (err[:, 1] ** 2).sum().item()
+        d["n"] += err.size(0)
+
+        # Vm/Va/Pg/Qg MAE,
+        dataset_name = self.args.data.networks[dataloader_idx]
+        self._bus_type_counts[dataloader_idx] = bus_type_counts(batch)
+        for k, v in per_bus_type_mae(output, target, batch).items():
+            self.log(
+                f"{dataset_name}/{k}",
+                v,
+                batch_size=batch.num_graphs,
+                add_dataloader_idx=False,
+                sync_dist=True,
+                logger=False,
+            )
+
         self._perbus_acc.accumulate(output, batch, dataloader_idx,
                                     load_pred=self._pending_forecast_bus)
 
@@ -125,6 +157,13 @@ class OptimalPowerFlowTwoStepTask(OptimalPowerFlowTask):
             )
             dist.all_reduce(vec, op=dist.ReduceOp.SUM)
             t["pd_pred"], t["pd_true"], t["pg_pred"], t["pg_true"] = vec.tolist()
+        for d in self._pdqd_err.values():
+            vec = torch.tensor(
+                [d["abs_p"], d["sq_p"], d["abs_q"], d["sq_q"], d["n"]],
+                dtype=torch.float64, device=self.device,
+            )
+            dist.all_reduce(vec, op=dist.ReduceOp.SUM)
+            d["abs_p"], d["sq_p"], d["abs_q"], d["sq_q"], d["n"] = vec.tolist()
 
     def on_test_end(self):
         # Reduce accumulators across DDP ranks BEFORE the rank-zero-only writer.
@@ -159,7 +198,16 @@ class OptimalPowerFlowTwoStepTask(OptimalPowerFlowTask):
         i_time_per_sample = infer_total / infer_samples if infer_samples > 0 else " "
 
         for idx, dataset in enumerate(self.args.data.networks):
-            rows = canonical_scalar_rows(grouped.get(dataset, {}))
+            d = self._pdqd_err[idx]
+            n = d["n"] or 1
+            rows = canonical_scalar_rows(
+                grouped.get(dataset, {}),
+                pd_mae=d["abs_p"] / n,
+                pd_rmse=(d["sq_p"] / n) ** 0.5,
+                qd_mae=d["abs_q"] / n,
+                qd_rmse=(d["sq_q"] / n) ** 0.5,
+                counts=self._bus_type_counts.get(idx, {}),
+            )
             rows += self._viol_acc[idx].finalize_rows(prefix="")
             t = self._totals[idx]
             rows += [
