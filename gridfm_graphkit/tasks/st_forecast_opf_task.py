@@ -69,8 +69,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         # Canonical constraint-violation accumulators (per network)
         self._branch_flow = ComputeBranchFlow()
         self._viol_acc = {i: ConstraintViolationAccumulator() for i in range(len(args.data.networks))}
-        # Per-bus-type node counts (grid-constant) captured per network during the
-        # test pass, for the per-bus-equal metric collapse in canonical_scalar_rows.
+        # Per-bus-type node counts 
         self._bus_type_counts = {}
         # Per-bus SIGNED residual dump (error-distribution plot); shared accumulator.
         self._perbus_acc = PerBusResidualAccumulator(len(args.data.networks))
