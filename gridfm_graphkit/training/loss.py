@@ -580,8 +580,23 @@ class ST_PhysicsForecastLoss(BaseLoss):
             dim_size=num_bus_total,
         )
 
+        # For the window normalizer, power is in window p.u. (b_w) but the physics
+        # layers use admittances/shunts on the GLOBAL base (b_s). Lift the power terms
+        # to global p.u. (x b_w/b_s) BEFORE the physics so every term in the balance
+        # shares one base -> the residual is base-consistent. (The old code scaled the
+        # residual AFTER differencing, which cannot fix a mix of bases.) No-op for the
+        # global normalizer, which has no window_baseMVA and is already single-base.
+        if mask is not None and mask.get("window_baseMVA") is not None:
+            scale = (mask["window_baseMVA"] / mask["static_baseMVA"]).repeat_interleave(
+                n * N_bus
+            ).to(Pd_pred.device)  # b_w/b_s per row
+            Pd_pred = Pd_pred * scale
+            Qd_pred = Qd_pred * scale
+            Qg_pred = Qg_pred * scale
+            Pg_bus_pred = Pg_bus_pred * scale
+
         # Create Bus pred tensor in correct format:  [B*n*N_bus, 4] matching [VM_OUT, VA_OUT, PG_OUT, QG_OUT]
-        bus_data_pred = torch.stack([Vm_pred, Va_pred, Pg_bus_pred, Qg_pred], dim=-1) 
+        bus_data_pred = torch.stack([Vm_pred, Va_pred, Pg_bus_pred, Qg_pred], dim=-1)
         
         # ---------------------------------------------------------
         # Create  Self-Consistent Predicted Universe
@@ -600,14 +615,8 @@ class ST_PhysicsForecastLoss(BaseLoss):
         Pft, Qft = self.branch_flow_layer(bus_data_pred, edge_index_bb, edge_attr_bb)
         P_in, Q_in = self.node_injection_layer(Pft, Qft, edge_index_bb, num_bus_total)
         res_P, res_Q = self.node_residuals_layer(P_in, Q_in, bus_data_pred, bus_x_physics)
-
-        # For sample-wise normalizer: Scale the resulting p.u. residuals into stable Global P.U. space
-        if mask is not None and mask.get("window_baseMVA") is not None:
-            scale = mask["window_baseMVA"] / mask["static_baseMVA"]
-            b_bus_scale = scale.repeat_interleave(n * N_bus).squeeze().to(res_P.device)
-            res_P = res_P * b_bus_scale
-            res_Q = res_Q * b_bus_scale
-
+        # residual is already base-consistent (power lifted to global p.u. above);
+        # residuals are in global p.u., stable across samples.
         loss = torch.mean(res_P ** 2 + res_Q ** 2)
 
         return {

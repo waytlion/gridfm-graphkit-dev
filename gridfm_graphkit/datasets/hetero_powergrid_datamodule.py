@@ -160,6 +160,7 @@ class LitGridHeteroDataModule(L.LightningDataModule):
                 load_scenarios,
                 val_ratio,
                 test_ratio,
+                train_window=getattr(self.args.data, "train_window", None),
             )
         elif self.split_by_load_scenario_idx:
             return split_dataset_by_load_scenario_idx(

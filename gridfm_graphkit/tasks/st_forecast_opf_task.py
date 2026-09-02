@@ -90,6 +90,20 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
     # Forward
     # ------------------------------------------------------------------
 
+    def _window_scale(self, batch, dataloader_idx=0):
+        # per-sample b_w/b_s for the window normalizer, used to keep the model's
+        # physics-derived Qg base-consistent; None for the global normalizer.
+        window_baseMVA = batch.get("window_baseMVA", None)
+        if window_baseMVA is None:
+            return None
+        static_baseMVA = None
+        if hasattr(self, "data_normalizers") and len(self.data_normalizers) > dataloader_idx:
+            norm = self.data_normalizers[dataloader_idx]
+            static_baseMVA = getattr(norm, "baseMVA_static", getattr(norm, "baseMVA", None))
+        if static_baseMVA is None:
+            return None
+        return window_baseMVA / static_baseMVA
+
     def forward(self, batch):
         """Unpack collate_temporal dict and call ST-GNN model."""
         folded_batch = batch["folded_batch"]
@@ -97,7 +111,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         B = batch["B"]
         W = batch["W"]
         N_bus = batch["N_bus"]
-        return self.model(folded_batch, target_batch, B, W, N_bus)
+        return self.model(folded_batch, target_batch, B, W, N_bus, window_scale=self._window_scale(batch))
 
     def _select_target_step(self, target_batch, B, n, step_index):
         target_graphs = target_batch.to_data_list()
@@ -117,6 +131,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
 
         windows = [window_graphs[i * W : (i + 1) * W] for i in range(B)]
         targets = [target_graphs[i * n : (i + 1) * n] for i in range(B)]
+        window_scale = self._window_scale(batch, dataloader_idx)
 
         pred_bus_steps = []
         pred_gen_steps = []
@@ -147,6 +162,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                     N_bus,
                     one_step=True,
                     step_index=0,
+                    window_scale=window_scale,
                 )
 
                 if self._time_forward:
@@ -215,12 +231,13 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                 torch.cuda.synchronize()
             _t0 = time.perf_counter()
 
+        window_scale = self._window_scale(batch, dataloader_idx)
         if use_one_step:
             target_batch = self._select_target_step(target_batch, B, n, 0)
-            pred = self.model(folded_batch, target_batch, B, W, N_bus, one_step=True, step_index=0)
+            pred = self.model(folded_batch, target_batch, B, W, N_bus, one_step=True, step_index=0, window_scale=window_scale)
             n = 1
         else:
-            pred = self.model(folded_batch, target_batch, B, W, N_bus)
+            pred = self.model(folded_batch, target_batch, B, W, N_bus, window_scale=window_scale)
 
         if self._time_forward:
             if _cuda:

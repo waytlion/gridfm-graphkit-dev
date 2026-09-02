@@ -87,6 +87,7 @@ def split_dataset_by_time(
     load_scenarios: Tensor,
     val_ratio: float = 0.1,
     test_ratio: float = 0.1,
+    train_window: int = None,
 ) -> Tuple[Subset, Subset, Subset]:
     """
     This function is ALMOST identical to <split_dataset_by_load_scenario_idx>
@@ -116,6 +117,11 @@ def split_dataset_by_time(
     
     # Split scenarios chronologically
     train_load_scenarios = unique_load_scenarios[:train_size]
+    # Optional: cap training to the most-recent `train_window` scenarios (drop older
+    # history) while keeping val/test IDENTICAL. Enables comparable-test-set studies
+    # (e.g. 3yr vs 24yr training, same held-out future test window).
+    if train_window is not None and 0 < train_window < len(train_load_scenarios):
+        train_load_scenarios = train_load_scenarios[-train_window:]
     val_load_scenarios = unique_load_scenarios[train_size:train_size + val_size]
     test_load_scenarios = unique_load_scenarios[train_size + val_size:]
     

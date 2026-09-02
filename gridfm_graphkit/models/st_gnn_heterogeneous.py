@@ -263,6 +263,9 @@ class ST_GNN_heterogeneous(nn.Module):
         self.exo_bus_indices = exo_bus_indices or DEFAULT_EXO_BUS_INDICES
         self.exo_gen_dim = exo_gen_dim
         self.n = args.data.forecast_horizon  # number of output steps
+        # predict load as a correction to the last observed value (persistence-relative)
+        # instead of the absolute level -> robust to secular load drift over long records
+        self.predict_load_delta = getattr(args.data, "predict_load_delta", False)
         self.step_embed_dim = getattr(args.model, "step_embed_dim", 0)
         self.temporal_decoder = getattr(args.model, "temporal_decoder", "linear")
         self.forecast_decoder_mode = getattr(args.model, "forecast_decoder_mode", "shared")
@@ -404,7 +407,7 @@ class ST_GNN_heterogeneous(nn.Module):
         self.branch_flow_layer = ComputeBranchFlow()
         self.node_injection_layer = ComputeNodeInjection()
 
-    def forward(self, folded_batch, target_batch, B, W, N_bus, one_step: bool = False, step_index: int = 0):
+    def forward(self, folded_batch, target_batch, B, W, N_bus, one_step: bool = False, step_index: int = 0, window_scale=None):
         """
         folded_batch: PyG Batch of B*W window graphs
         target_batch: PyG Batch of B*n target graphs 
@@ -541,6 +544,11 @@ class ST_GNN_heterogeneous(nn.Module):
         # Pick, per bus, the lookback timestep with
         # the largest |Pd| to not divide by 0
         pd_hist = folded_batch.x_dict["bus"][:, PD_H].view(B, W, N_bus)
+        # persistence-relative (delta) load: model predicts the correction to the last
+        # observed load, not the absolute level -> drift-robust (persistence auto-tracks
+        # the current regime; qd_derived below then follows the corrected Pd).
+        if self.predict_load_delta:
+            pd_pred = pd_pred + pd_hist[:, -1, :].unsqueeze(-1)  # [B,N_bus,1] broadcast over n
         qd_hist = folded_batch.x_dict["bus"][:, QD_H].view(B, W, N_bus)
         ref_t = pd_hist.abs().argmax(dim=1, keepdim=True)  # [B, 1, N_bus]
         pd_ref = pd_hist.gather(1, ref_t).squeeze(1)  # [B, N_bus]
@@ -569,7 +577,17 @@ class ST_GNN_heterogeneous(nn.Module):
         _, Q_in = self.node_injection_layer(Pft, Qft, edge_index_bb, num_bus_total)
 
         q_shunt = target_batch["bus"].x[:, BS] * vm_flat ** 2
-        qg_flat = Q_in + qd_flat - q_shunt
+        # Q_in and q_shunt come from admittances/shunts on the GLOBAL base (b_s), but
+        # qd_flat is window-normalized (b_w). Under window normalization those bases
+        # differ per sample, so rebase the admittance-derived term to window p.u.
+        # (x b_s/b_w) before adding the window-p.u. load -> a base-consistent Qg that
+        # stays in the model's window-p.u. output space. No-op for the global
+        # normalizer (window_scale=None), which is already single-base.
+        qg_phys = Q_in - q_shunt
+        if window_scale is not None:
+            inv = (1.0 / window_scale).repeat_interleave(n * N_bus).to(qg_phys.device)  # b_s/b_w per row
+            qg_phys = qg_phys * inv
+        qg_flat = qg_phys + qd_flat
 
         gen_mask_flat = target_batch.mask_dict["PV"] | target_batch.mask_dict["REF"]
         qg_flat = torch.where(gen_mask_flat, qg_flat, torch.zeros_like(qg_flat))
