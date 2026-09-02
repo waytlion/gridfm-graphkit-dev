@@ -262,7 +262,19 @@ class ST_GNN_heterogeneous(nn.Module):
         self.use_exogenous = getattr(args.model, "use_exogenous", False)
         self.exo_bus_indices = exo_bus_indices or DEFAULT_EXO_BUS_INDICES
         self.exo_gen_dim = exo_gen_dim
-        self.n = args.data.forecast_horizon  # number of output steps
+        # steps emitted per forward call. Feedback rollout modes (autoregressive /
+        # block_autoregressive) predict one block per call and reach the full horizon
+        # by repeated calls, so the temporal decoder + per-horizon heads size to the
+        # block, not the horizon; direct mode emits the whole horizon in one call.
+        # Sizing to the per-call length keeps every parameter used every step -> no
+        # dead heads and no DDP unused-parameter errors under multi-GPU training.
+        forecast_mode = getattr(args.data, "forecast_mode", "direct")
+        if forecast_mode == "autoregressive":
+            self.n = 1
+        elif forecast_mode == "block_autoregressive":
+            self.n = getattr(args.data, "forecast_block", 1)
+        else:
+            self.n = args.data.forecast_horizon  # number of output steps
         self.step_embed_dim = getattr(args.model, "step_embed_dim", 0)
         self.temporal_decoder = getattr(args.model, "temporal_decoder", "linear")
         self.forecast_decoder_mode = getattr(args.model, "forecast_decoder_mode", "shared")
@@ -404,7 +416,7 @@ class ST_GNN_heterogeneous(nn.Module):
         self.branch_flow_layer = ComputeBranchFlow()
         self.node_injection_layer = ComputeNodeInjection()
 
-    def forward(self, folded_batch, target_batch, B, W, N_bus, one_step: bool = False, step_index: int = 0):
+    def forward(self, folded_batch, target_batch, B, W, N_bus, block: int = None, step_index: int = 0):
         """
         folded_batch: PyG Batch of B*W window graphs
         target_batch: PyG Batch of B*n target graphs 
@@ -419,7 +431,9 @@ class ST_GNN_heterogeneous(nn.Module):
                 "gen": [B, N_gen, n, 1]  forecast [Pg]
         """
         D = self.latent_dim
-        n = 1 if one_step else self.n
+        # block=k -> emit k contiguous steps starting at step_index (k=1 is one-step
+        # autoregression, k=self.n is the full direct horizon). block=None -> direct.
+        n = block if block is not None else self.n
 
         # spatial pass
         h_bus, h_gen = self.spatial_encoder(
@@ -454,14 +468,14 @@ class ST_GNN_heterogeneous(nn.Module):
                 z_bus_trans = self.time_proj_bus(z_bus_seq).permute(0, 1, 3, 2)
                 z_gen_trans = self.time_proj_gen(z_gen_seq).permute(0, 1, 3, 2)
 
-        if one_step:
-            z_bus_trans = z_bus_trans[:, :, :1, :]
-            z_gen_trans = z_gen_trans[:, :, :1, :]
+        if block is not None:
+            z_bus_trans = z_bus_trans[:, :, :n, :]
+            z_gen_trans = z_gen_trans[:, :, :n, :]
 
         #Optional Step embedding
         if self.step_embed_dim > 0:
-            if one_step:
-                step_idx = torch.tensor([step_index], device=z_bus_trans.device)
+            if block is not None:
+                step_idx = torch.arange(step_index, step_index + n, device=z_bus_trans.device)
             else:
                 step_idx = torch.arange(n, device=z_bus_trans.device)
             step_emb = self.step_embeddings(step_idx)
@@ -476,21 +490,15 @@ class ST_GNN_heterogeneous(nn.Module):
 
         # forecast decoder: per-horizon heads or shared head across horizons
         if self.forecast_decoder_mode == "per_horizon":
-            if one_step:
-                raw_forecast_bus = self.forecast_decoders_bus[0](
-                    z_bus_cond[:, :, 0, :]
-                ).unsqueeze(2)
-                raw_forecast_gen = self.forecast_decoders_gen[0](
-                    z_gen_cond[:, :, 0, :]
-                ).unsqueeze(2)
-            else:
-                raw_forecast_bus = torch.stack([
-                    self.forecast_decoders_bus[k](z_bus_cond[:, :, k, :]) for k in range(n)
-                ], dim=2)  # [B, N_bus, n, 3]: [Pd, Vm, Va]
+            # head step_index+k -> absolute horizon of the k-th emitted step
+            # (step_index=0 for direct/full horizon, offset only for a shifted block)
+            raw_forecast_bus = torch.stack([
+                self.forecast_decoders_bus[step_index + k](z_bus_cond[:, :, k, :]) for k in range(n)
+            ], dim=2)  # [B, N_bus, n, 3]: [Pd, Vm, Va]
 
-                raw_forecast_gen = torch.stack([
-                    self.forecast_decoders_gen[k](z_gen_cond[:, :, k, :]) for k in range(n)
-                ], dim=2)  # [B, N_gen, n, 1]
+            raw_forecast_gen = torch.stack([
+                self.forecast_decoders_gen[step_index + k](z_gen_cond[:, :, k, :]) for k in range(n)
+            ], dim=2)  # [B, N_gen, n, 1]
         else:
             raw_forecast_bus = self.forecast_decoder_bus(
                 z_bus_cond.reshape(B * N_bus * n, -1)
@@ -503,9 +511,9 @@ class ST_GNN_heterogeneous(nn.Module):
         n_target = target_batch["bus"].x.size(0) // (B * N_bus)
         if n_target < 1:
             raise ValueError("target_batch must include at least one forecast step.")
-        if one_step and (step_index < 0 or step_index >= n_target):
+        if block is not None and (step_index < 0 or step_index + n > n_target):
             raise ValueError(
-                f"step_index ({step_index}) must be in [0, {n_target - 1}] for one_step mode."
+                f"block [step_index={step_index}, size={n}] must fit within [0, {n_target}] target steps."
             )
 
         target_bus_x_full = target_batch["bus"].x.view(B, n_target, N_bus, -1).permute(0, 2, 1, 3)
@@ -514,11 +522,11 @@ class ST_GNN_heterogeneous(nn.Module):
         max_vm = target_bus_x_full[..., MAX_VM_H]
         min_pg = target_gen_x_full[..., MIN_PG]    # [B, N_gen, n]
         max_pg = target_gen_x_full[..., MAX_PG]
-        if one_step:
-            min_vm = min_vm[:, :, step_index:step_index + 1]
-            max_vm = max_vm[:, :, step_index:step_index + 1]
-            min_pg = min_pg[:, :, step_index:step_index + 1]
-            max_pg = max_pg[:, :, step_index:step_index + 1]
+        if block is not None:
+            min_vm = min_vm[:, :, step_index:step_index + n]
+            max_vm = max_vm[:, :, step_index:step_index + n]
+            min_pg = min_pg[:, :, step_index:step_index + n]
+            max_pg = max_pg[:, :, step_index:step_index + n]
 
         ## out-of-place ops (torch.cat / reassignment) instead of in-place index
         ## assignment because in place leads to -> runtimeError (due to pytorch precompile)

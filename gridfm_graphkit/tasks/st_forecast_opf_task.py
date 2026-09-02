@@ -55,6 +55,18 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         self.forecast_naive = {i: [] for i in range(len(args.data.networks))}
         self.forecast_gaps = {i: [] for i in range(len(args.data.networks))}
         self.forecast_mode = getattr(args.data, "forecast_mode", "direct")
+        # cyclical time features (cols 15..20 on the window) are re-attached to
+        # fed-back graphs during a rollout so the window stays model-input-width.
+        self._time_features_table = None
+        # block_autoregressive: emit a fixed block of forecast_block steps per model
+        # call, roll it back into the lookback window, repeat until the horizon is filled.
+        self.forecast_block = getattr(args.data, "forecast_block", 1)
+        if self.forecast_mode == "block_autoregressive":
+            n = args.data.forecast_horizon
+            if self.forecast_block < 1 or n % self.forecast_block != 0:
+                raise ValueError(
+                    f"forecast_block ({self.forecast_block}) must divide forecast_horizon ({n})."
+                )
         # Bus metadata for diagnostic plots (populated on first test batch)
         self._bus_type_pq = None
         self._bus_type_pv = None
@@ -99,12 +111,82 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         N_bus = batch["N_bus"]
         return self.model(folded_batch, target_batch, B, W, N_bus)
 
-    def _select_target_step(self, target_batch, B, n, step_index):
-        target_graphs = target_batch.to_data_list()
-        step_graphs = [target_graphs[i * n + step_index] for i in range(B)]
-        return Batch.from_data_list(step_graphs)
+    @staticmethod
+    def _safe_to_data_list(batch):
+        # PyG separate() chokes on non-tensor globals (is_normalized: bool, mask_dict:
+        # dict), so stash them for the split and restore afterwards. Returns the graph
+        # list plus the stashed globals (to_data_list drops them from each sub-graph).
+        gs = batch._global_store
+        stashed = {k: gs[k] for k in list(gs.keys()) if not torch.is_tensor(gs[k])}
+        for k in stashed:
+            del gs[k]
+        graphs = batch.to_data_list()
+        for k, v in stashed.items():
+            gs[k] = v
+        return graphs, stashed
 
-    def _autoregressive_rollout(self, batch, dataloader_idx=0):
+    @staticmethod
+    def _build_target_subbatch(graphs, mask_dict, orig_num_graphs):
+        # Rebuild a Batch from a graph subset and re-attach mask_dict (dropped by
+        # to_data_list). Bus/gen/branch masks are deterministic from the case and
+        # identical across every step and scenario, so the first graph's rows tile
+        # exactly onto the new B*k graphs (model only reads PV/REF for Qg derivation).
+        sub = Batch.from_data_list(graphs)
+        if mask_dict is not None:
+            new_num = len(graphs)
+            tiled = {}
+            for key, v in mask_dict.items():
+                per = v.shape[0] // orig_num_graphs
+                tiled[key] = v[:per].repeat(new_num, *([1] * (v.dim() - 1)))
+            sub._global_store["mask_dict"] = tiled
+        return sub
+
+    @property
+    def _feedback_block(self):
+        # steps emitted per model call for the feedback (rollout) modes: 1 for plain
+        # autoregression, forecast_block for the hybrid; None for direct (no feedback).
+        if self.forecast_mode == "autoregressive":
+            return 1
+        if self.forecast_mode == "block_autoregressive":
+            return self.forecast_block
+        return None
+
+    def _time_table(self):
+        # exact cyclical table the collate used (built + cached by the datamodule);
+        # None when append_time_features is off, so no re-attach is needed.
+        if self._time_features_table is None:
+            try:
+                dm = self.trainer.datamodule
+            except (RuntimeError, AttributeError):
+                dm = None
+            if dm is not None and hasattr(dm, "_build_time_features_table"):
+                self._time_features_table = dm._build_time_features_table()
+        return self._time_features_table
+
+    def _readd_time_features(self, graph):
+        # re-append the 6 cyclical cols (dropped when a 15-wide target graph is
+        # reused as a fed-back window step) so it matches the 21-wide window width.
+        table = self._time_table()
+        if table is None:
+            return graph
+        bus_x = graph["bus"].x
+        tf = table[int(graph["scenario_id"])].to(device=bus_x.device, dtype=bus_x.dtype)  # [6]
+        graph["bus"].x = torch.cat([bus_x, tf.unsqueeze(0).expand(bus_x.size(0), -1)], dim=1)
+        return graph
+
+    def _select_target_block(self, target_batch, B, n, start, k):
+        # sample-major, step-minor slice of k contiguous target steps starting at `start`
+        target_graphs, stashed = self._safe_to_data_list(target_batch)
+        step_graphs = [
+            target_graphs[i * n + start + j] for i in range(B) for j in range(k)
+        ]
+        return self._build_target_subbatch(step_graphs, stashed.get("mask_dict"), B * n)
+
+    def _autoregressive_rollout(self, batch, block, dataloader_idx=0):
+        # Feedback rollout: predict `block` steps per model call (block=1 = plain
+        # one-step autoregression; block=k = k-step multi-step chunks), roll the whole
+        # predicted block back into the lookback window, repeat n//block times to fill
+        # the horizon. Predictions stay in normalized space (fed back as-is).
         folded_batch = batch["folded_batch"]
         target_batch = batch["target_batch"]
         B = batch["B"]
@@ -112,9 +194,9 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         n = batch["n"]
         N_bus = batch["N_bus"]
 
-        window_graphs = folded_batch.to_data_list()
-        target_graphs = target_batch.to_data_list()
-
+        window_graphs, _ = self._safe_to_data_list(folded_batch)
+        target_graphs, target_stashed = self._safe_to_data_list(target_batch)
+        target_mask = target_stashed.get("mask_dict")
         windows = [window_graphs[i * W : (i + 1) * W] for i in range(B)]
         targets = [target_graphs[i * n : (i + 1) * n] for i in range(B)]
 
@@ -122,15 +204,15 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         pred_gen_steps = []
 
         with torch.no_grad():
-            for step in range(n):
+            for start in range(0, n, block):
                 all_window_graphs = []
-                target_step_graphs = []
+                target_block_graphs = []  # sample-major, step-minor (matches model view)
                 for i in range(B):
                     all_window_graphs.extend(windows[i])
-                    target_step_graphs.append(targets[i][step])
+                    target_block_graphs.extend(targets[i][start : start + block])
 
                 folded_step = Batch.from_data_list(all_window_graphs)
-                target_step = Batch.from_data_list(target_step_graphs)
+                target_step = self._build_target_subbatch(target_block_graphs, target_mask, B * n)
 
                 if self._time_forward:
                     import time
@@ -139,14 +221,11 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                         torch.cuda.synchronize()
                     _t0 = time.perf_counter()
 
+                # new CUDA-graph step each iteration so reduce-overhead may reuse its
+                # static buffers safely across the repeated compiled model calls
+                torch.compiler.cudagraph_mark_step_begin()
                 pred_step = self.model(
-                    folded_step,
-                    target_step,
-                    B,
-                    W,
-                    N_bus,
-                    one_step=True,
-                    step_index=0,
+                    folded_step, target_step, B, W, N_bus, block=block, step_index=0,
                 )
 
                 if self._time_forward:
@@ -158,28 +237,32 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                 if isinstance(pred_step, tuple):
                     pred_step = {"bus": pred_step[0], "gen": pred_step[1]}
 
-                pred_bus_steps.append(pred_step["bus"])
-                pred_gen_steps.append(pred_step["gen"])
+                # clone: under torch.compile(reduce-overhead) the model reuses one
+                # CUDA-graph output buffer per call, so accumulated block outputs would
+                # be overwritten by the next iteration before the final cat.
+                pred_step = {"bus": pred_step["bus"].clone(), "gen": pred_step["gen"].clone()}
+                pred_bus_steps.append(pred_step["bus"])  # [B, N_bus, block, 5]
+                pred_gen_steps.append(pred_step["gen"])  # [B, N_gen, block, 1]
 
-                pred_bus = pred_step["bus"][:, :, 0, :]
-                pred_gen = pred_step["gen"][:, :, 0, :]
-
+                # roll the whole predicted block back into each sample's window
                 for i in range(B):
-                    next_graph = target_step_graphs[i].clone()
+                    new_graphs = []
+                    for j in range(block):
+                        next_graph = targets[i][start + j].clone()
+                        bus_x = next_graph["bus"].x
+                        bus_x[:, PD_H] = pred_step["bus"][i, :, j, 0]
+                        bus_x[:, QD_H] = pred_step["bus"][i, :, j, 1]
+                        bus_x[:, QG_H] = pred_step["bus"][i, :, j, 2]
+                        bus_x[:, VM_H] = pred_step["bus"][i, :, j, 3]
+                        bus_x[:, VA_H] = pred_step["bus"][i, :, j, 4]
+                        next_graph["bus"].x = bus_x
 
-                    bus_x = next_graph["bus"].x
-                    bus_x[:, PD_H] = pred_bus[i, :, 0]
-                    bus_x[:, QD_H] = pred_bus[i, :, 1]
-                    bus_x[:, QG_H] = pred_bus[i, :, 2]
-                    bus_x[:, VM_H] = pred_bus[i, :, 3]
-                    bus_x[:, VA_H] = pred_bus[i, :, 4]
-                    next_graph["bus"].x = bus_x
+                        gen_x = next_graph["gen"].x
+                        gen_x[:, PG_H] = pred_step["gen"][i, :, j, 0]
+                        next_graph["gen"].x = gen_x
+                        new_graphs.append(self._readd_time_features(next_graph))
 
-                    gen_x = next_graph["gen"].x
-                    gen_x[:, PG_H] = pred_gen[i, :, 0]
-                    next_graph["gen"].x = gen_x
-
-                    windows[i] = windows[i][1:] + [next_graph]
+                    windows[i] = (windows[i] + new_graphs)[-W:]
 
         pred_bus = torch.cat(pred_bus_steps, dim=2)  # [B, N_bus, n, 5]
         pred_gen = torch.cat(pred_gen_steps, dim=2)  # [B, N_gen, n, 1]
@@ -206,7 +289,10 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         n = batch["n"]
         N_bus = batch["N_bus"]
 
-        use_one_step = self.forecast_mode == "autoregressive" and prefix in {"train", "val"}
+        # train/val supervise a single model call on the FIRST feedback block (1 step
+        # for autoregressive, forecast_block for block_autoregressive); test/predict
+        # run the full rollout instead. Direct mode always emits the whole horizon.
+        train_block = self._feedback_block if prefix in {"train", "val"} else None
 
         if self._time_forward:
             import time  # torch is already imported at module scope
@@ -215,10 +301,10 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
                 torch.cuda.synchronize()
             _t0 = time.perf_counter()
 
-        if use_one_step:
-            target_batch = self._select_target_step(target_batch, B, n, 0)
-            pred = self.model(folded_batch, target_batch, B, W, N_bus, one_step=True, step_index=0)
-            n = 1
+        if train_block is not None:
+            target_batch = self._select_target_block(target_batch, B, n, 0, train_block)
+            pred = self.model(folded_batch, target_batch, B, W, N_bus, block=train_block, step_index=0)
+            n = train_block
         else:
             pred = self.model(folded_batch, target_batch, B, W, N_bus)
 
@@ -324,8 +410,8 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         self.total_test_sequences += int(batch["B"])
 
         # 1. Forward pass
-        if self.forecast_mode == "autoregressive":
-            pred = self._autoregressive_rollout(batch, dataloader_idx=dataloader_idx)
+        if self._feedback_block is not None:
+            pred = self._autoregressive_rollout(batch, self._feedback_block, dataloader_idx=dataloader_idx)
             if isinstance(pred, tuple):
                 pred = {"bus": pred[0], "gen": pred[1]}
 
@@ -546,8 +632,8 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         return total_loss
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        if self.forecast_mode == "autoregressive":
-            return self._autoregressive_rollout(batch, dataloader_idx=dataloader_idx)
+        if self._feedback_block is not None:
+            return self._autoregressive_rollout(batch, self._feedback_block, dataloader_idx=dataloader_idx)
         return self(batch)
 
     # ------------------------------------------------------------------
