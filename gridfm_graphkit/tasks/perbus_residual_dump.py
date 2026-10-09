@@ -12,6 +12,7 @@ How?
 
 import os
 
+import numpy as np
 import torch
 import pandas as pd
 
@@ -34,7 +35,7 @@ class PerBusResidualAccumulator:
         self._node_inj = ComputeNodeInjection()
         self._node_res = ComputeNodeResiduals()
 
-    def accumulate(self, output, batch, dataloader_idx, load_pred):
+    def accumulate(self, output, batch, dataloader_idx, load_pred, target):
         """Recompute + stash SIGNED per-bus P/Q residuals (MW/MVAr) computed using true load (== in the REALIZED space)
 
         Args:
@@ -74,6 +75,13 @@ class PerBusResidualAccumulator:
         res_Q = res_Q.detach().cpu().view(G, N_bus)
         pd_true = pd_true.detach().cpu().view(G, N_bus)
 
+        out_b = output["bus"][:, :3].detach().cpu().view(G, N_bus, 3).clone()
+        tgt_b = target["bus"][:, :3].detach().cpu().view(G, N_bus, 3).clone()
+        out_b[..., 1] = torch.rad2deg(out_b[..., 1])
+        tgt_b[..., 1] = torch.rad2deg(tgt_b[..., 1])
+        out_g = output["gen"].detach().cpu().view(G, -1)
+        tgt_g = target["gen"].detach().cpu().view(G, -1)
+
         # One record per scenario (graph) in this batch.
         base = self._scen_offset[dataloader_idx]
         for g in range(G):
@@ -85,6 +93,13 @@ class PerBusResidualAccumulator:
                 "res_p_mw_fc": res_P_fc[g].numpy(),
                 "res_q_mvar_fc": res_Q_fc[g].numpy(),
                 "pd_forecast_mw": pd_fc[g].numpy(),
+            })
+            # per-bus/per-gen state (pred vs OPF-on-true-load target) for the error-distribution plots
+            self._recs[dataloader_idx][-1].update({
+                "pd_pred": pd_fc[g].numpy(), "pd_true": pd_true[g].numpy(),
+                **{f"{k}_{s}": v[g].numpy() for s, src in (("pred", out_b), ("true", tgt_b)) for k, v in
+                   (("vm", src[:, :, 0]), ("va_deg", src[:, :, 1]), ("pg", src[:, :, 2]))},
+                "gen_pg_pred": out_g[g].numpy(), "gen_pg_true": tgt_g[g].numpy(),
             })
         self._scen_offset[dataloader_idx] = base + G
 
@@ -124,3 +139,19 @@ class PerBusResidualAccumulator:
         dffc = _to_df("res_p_mw_fc", "res_q_mvar_fc", "pd_forecast_mw")
         print(f"    + forecast-space (modeling infeasibility): |res_p| MAE={dffc['res_p_mw'].abs().mean():.4f} MW")
         dffc.to_parquet(os.path.join(test_dir, f"{dataset}_perbus_residuals_forecast.parquet"), index=False)
+
+        # State dumps: [scenario, bus, <var>_pred, <var>_true] and [scenario, gen, pg_pred, pg_true]
+        bus_cols = ["pd", "vm", "va_deg", "pg"]
+        n_gen = len(recs[0]["gen_pg_pred"])
+        scen = np.repeat([r["scenario"] for r in recs], n_bus)
+        bus = pd.DataFrame({"scenario": scen, "bus": np.tile(np.arange(n_bus), len(recs)),
+                            **{f"{c}_{s}": np.concatenate([r[f"{c}_{s}"] for r in recs])
+                               for c in bus_cols for s in ("pred", "true")}})
+        gen = pd.DataFrame({"scenario": np.repeat([r["scenario"] for r in recs], n_gen),
+                            "gen": np.tile(np.arange(n_gen), len(recs)),
+                            **{f"pg_{s}": np.concatenate([r[f"gen_pg_{s}"] for r in recs]) for s in ("pred", "true")}})
+        rmse = lambda d, c: float(np.sqrt(((d[f"{c}_pred"] - d[f"{c}_true"]) ** 2).mean()))
+        print(f"    + state dump: gen Pg RMSE={rmse(gen, 'pg'):.4f} MW | bus Vm RMSE={rmse(bus, 'vm'):.5f} "
+              f"Va RMSE={rmse(bus, 'va_deg'):.4f} deg Pd RMSE={rmse(bus, 'pd'):.4f} MW")
+        bus.to_parquet(os.path.join(test_dir, f"{dataset}_state_bus.parquet"), index=False)
+        gen.to_parquet(os.path.join(test_dir, f"{dataset}_state_gen.parquet"), index=False)

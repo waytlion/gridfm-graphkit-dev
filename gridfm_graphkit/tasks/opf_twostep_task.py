@@ -132,7 +132,7 @@ class OptimalPowerFlowTwoStepTask(OptimalPowerFlowTask):
             )
 
         self._perbus_acc.accumulate(output, batch, dataloader_idx,
-                                    load_pred=self._pending_forecast_bus)
+                                    load_pred=self._pending_forecast_bus, target=target)
 
     @rank_zero_only
     def _canonical_metrics_dir(self):

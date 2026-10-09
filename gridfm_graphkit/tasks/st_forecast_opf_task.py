@@ -544,7 +544,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         # denormalized), aligned with target_batch bus ordering -> forecast-space residual.
         self._perbus_acc.accumulate(
             output_opf, target_batch, dataloader_idx,
-            load_pred=flat_pred["bus"][:, [0, 1]],
+            load_pred=flat_pred["bus"][:, [0, 1]], target=target_opf,
         )
 
         # 9. Log all test metrics
