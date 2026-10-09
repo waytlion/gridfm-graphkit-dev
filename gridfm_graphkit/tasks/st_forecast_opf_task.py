@@ -801,11 +801,12 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
             t_time_val = " "
             t_time_per_sample = " "
 
+        # per sample = per dispatch decision (B windows x n horizon steps), as in the surrogate arm
         infer_time_total = getattr(self, "_infer_time_s", 0.0)
-        test_sequences_count = getattr(self, "total_test_sequences", 0)
-        if test_sequences_count > 0:
+        infer_samples = getattr(self, "_infer_samples", 0)
+        if infer_samples > 0:
             i_time_val = infer_time_total
-            i_time_per_sample = infer_time_total / test_sequences_count
+            i_time_per_sample = infer_time_total / infer_samples
         else:
             i_time_val = " "
             i_time_per_sample = " "
