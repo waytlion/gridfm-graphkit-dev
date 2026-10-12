@@ -16,7 +16,12 @@ from torch_geometric.nn import HeteroConv, TransformerConv
 
 from gridfm_graphkit.io.registries import MODELS_REGISTRY
 from gridfm_graphkit.models.utils import bound_with_sigmoid, ComputeBranchFlow, ComputeNodeInjection
-from gridfm_graphkit.models.temporal_encoders import TCN, TemporalTransformerEncoder, TemporalTransformerDecoder
+from gridfm_graphkit.models.temporal_encoders import (
+    TCN,
+    TemporalTransformerEncoder,
+    TemporalTransformerDecoder,
+    SinusoidalPositionalEncoding,
+)
 from gridfm_graphkit.datasets.globals import (
     PD_H, QD_H,
     MIN_VM_H, MAX_VM_H,
@@ -29,6 +34,7 @@ from gridfm_graphkit.datasets.globals import (
 # Qd (= Pd * fixed per-bus Q/P ratio) and Qg (reactive balance) are derived in
 # forward(), not predicted 
 RAW_PD_IDX = 0
+RAW_QG_IDX = 0  # same slot as Pd when predict_load=False (dispatch-only: [Qg, Vm, Va])
 RAW_VM_IDX = 1
 RAW_VA_IDX = 2
 BUS_DECODER_DIM = 3
@@ -194,7 +200,10 @@ class CrossAttentionTimeDecoder(nn.Module):
         - return: [B, N, n, D]
     
     #! Notes:
-        - TCN Base model performed worse with this decoder than with the linear decoder on all metrics 
+        - TCN Base model performed worse with this decoder than with the linear decoder on all
+          metrics -- but that run predates the kv positional encoding below, so the decoder was
+          position-blind while the Linear(W->n) baseline it lost to is position-indexed by
+          construction. That comparison does not carry over; needs a rerun.
 
     Architecture:
         - learnable-query cross-attention
@@ -202,7 +211,7 @@ class CrossAttentionTimeDecoder(nn.Module):
             - E_future: Learnable embeddings for each horizon step: [1, n, D] (shortcut to encode horizon-dependent structure early in training - mby useless but prob not a problem)
             - ontext_proj gives sample-specific conditioning (what this particular sequence implies) -> only useful for TCN i believe: context == last TCN state
     """
-    def __init__(self, latent_dim: int, horizon: int, num_heads: int, dropout: float = 0.0):
+    def __init__(self, latent_dim: int, window: int, horizon: int, num_heads: int, dropout: float = 0.0):
         super().__init__()
         self.horizon = horizon
         self.E_future = nn.Parameter(torch.empty(1, horizon, latent_dim))
@@ -214,13 +223,20 @@ class CrossAttentionTimeDecoder(nn.Module):
             dropout=dropout,
             batch_first=True,
         )
-        self.norm_q = nn.LayerNorm(latent_dim) 
+        self.norm_q = nn.LayerNorm(latent_dim)
+        # Attention is permutation-invariant over the key axis, so without a PE the
+        # memory carries no lag information and the decoder cannot route timestep w
+        # to horizon step k. norm_kv precedes it because the TCN ends on relu(out+x)
+        # with no output norm -> unnormalized activations would swamp the unit-scale PE.
+        self.norm_kv = nn.LayerNorm(latent_dim)
+        self.kv_pe = SinusoidalPositionalEncoding(latent_dim, max_len=window)
 
     def forward(self, z_seq: torch.Tensor) -> torch.Tensor:
         """ z_seq: input from temporal encoder
         """
-        B, N, D, W = z_seq.shape 
-        kv = z_seq.permute(0, 1, 3, 2).contiguous().reshape(B * N, W, D)  
+        B, N, D, W = z_seq.shape
+        kv = z_seq.permute(0, 1, 3, 2).contiguous().reshape(B * N, W, D)
+        kv = self.kv_pe(self.norm_kv(kv))
         terminal_state = z_seq[:, :, :, -1].contiguous().reshape(B * N, D) 
         context = self.context_proj(terminal_state).unsqueeze(1) # [B*N, n, D]
         q = self.E_future.expand(B * N, -1, -1) + context # q_base: [1, n, D] -> expand [B*N, n, D]
@@ -266,6 +282,16 @@ class ST_GNN_heterogeneous(nn.Module):
         # predict load as a correction to the last observed value (persistence-relative)
         # instead of the absolute level -> robust to secular load drift over long records
         self.predict_load_delta = getattr(args.data, "predict_load_delta", False)
+        # False = dispatch-only: no load forecast, Qg predicted directly instead of derived
+        # (Qd/Qg derivation needs a predicted load); Pd/Qd output columns are NaN
+        self.predict_load = getattr(args.model, "predict_load", True)
+        if not self.predict_load and (
+            self.predict_load_delta or getattr(args.data, "forecast_mode", "direct") != "direct"
+        ):
+            raise ValueError(
+                "predict_load=False needs forecast_mode='direct' and predict_load_delta=False "
+                "(both consume the predicted load)."
+            )
         self.step_embed_dim = getattr(args.model, "step_embed_dim", 0)
         self.temporal_decoder = getattr(args.model, "temporal_decoder", "linear")
         self.forecast_decoder_mode = getattr(args.model, "forecast_decoder_mode", "shared")
@@ -359,8 +385,18 @@ class ST_GNN_heterogeneous(nn.Module):
                     f"latent_dim ({self.latent_dim}) must be divisible by "
                     f"temporal_decoder_heads ({decoder_heads})"
                 )
-                self.time_attn_bus = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, temporal_dropout)
-                self.time_attn_gen = CrossAttentionTimeDecoder(self.latent_dim, self.n, decoder_heads, temporal_dropout)
+                self.time_attn_bus = CrossAttentionTimeDecoder(self.latent_dim, temporal_window, self.n, decoder_heads, temporal_dropout)
+                self.time_attn_gen = CrossAttentionTimeDecoder(self.latent_dim, temporal_window, self.n, decoder_heads, temporal_dropout)
+            elif self.temporal_decoder == "terminal":
+                # Ablation: no W->n stage at all, every horizon step reads the TCN's
+                # last state. Only the heads then separate the steps, so with one
+                # shared head and no step embedding all n forecasts are identical.
+                if self.forecast_decoder_mode != "per_horizon" and self.step_embed_dim == 0:
+                    raise ValueError(
+                        "temporal_decoder='terminal' needs forecast_decoder_mode='per_horizon' "
+                        "or step_embed_dim>0, else every horizon step gets identical input AND "
+                        "identical weights -> the same prediction repeated n times."
+                    )
             else:
                 self.time_proj_bus = nn.Linear(temporal_window, self.n)
                 self.time_proj_gen = nn.Linear(temporal_window, self.n)
@@ -453,6 +489,9 @@ class ST_GNN_heterogeneous(nn.Module):
             if self.temporal_decoder == "cross_attention":
                 z_bus_trans = self.time_attn_bus(z_bus_seq)
                 z_gen_trans = self.time_attn_gen(z_gen_seq)
+            elif self.temporal_decoder == "terminal":
+                z_bus_trans = z_bus_seq[:, :, :, -1].unsqueeze(2).expand(-1, -1, n, -1)
+                z_gen_trans = z_gen_seq[:, :, :, -1].unsqueeze(2).expand(-1, -1, n, -1)
             else:
                 z_bus_trans = self.time_proj_bus(z_bus_seq).permute(0, 1, 3, 2)
                 z_gen_trans = self.time_proj_gen(z_gen_seq).permute(0, 1, 3, 2)
@@ -533,8 +572,17 @@ class ST_GNN_heterogeneous(nn.Module):
         vm_bounded = bound_with_sigmoid(
             raw_forecast_bus[..., RAW_VM_IDX], min_vm, max_vm,
         )  # [B, N_bus, n]
-        pd_pred = raw_forecast_bus[..., RAW_PD_IDX]  # Pd (unbounded, learned)
         va_pred = raw_forecast_bus[..., RAW_VA_IDX]  # Va (unbounded, learned)
+
+        if not self.predict_load:
+            # dispatch-only: Qg predicted (unbounded, like the surrogate), 0 at PQ buses
+            gen_mask = (target_batch.mask_dict["PV"] | target_batch.mask_dict["REF"]).view(B, n, N_bus).permute(0, 2, 1)
+            qg_pred = torch.where(gen_mask, raw_forecast_bus[..., RAW_QG_IDX], torch.zeros_like(va_pred))
+            nan = torch.full_like(va_pred, float("nan"))
+            final_forecast_bus = torch.stack([nan, nan, qg_pred, vm_bounded, va_pred], dim=-1)
+            return self._pack(final_forecast_bus, final_forecast_gen)
+
+        pd_pred = raw_forecast_bus[..., RAW_PD_IDX]  # Pd (unbounded, learned)
 
         # --- Qd derived from a fixed per-bus Q/P ratio (dependent quantity, not predicted) ---
         # By dataset construction Qd = Pd * (Q_base/P_base) at every scenario and
@@ -587,7 +635,9 @@ class ST_GNN_heterogeneous(nn.Module):
         if window_scale is not None:
             inv = (1.0 / window_scale).repeat_interleave(n * N_bus).to(qg_phys.device)  # b_s/b_w per row
             qg_phys = qg_phys * inv
-        qg_flat = qg_phys + qd_flat
+        # detach Qd: the Qg MSE should train voltages only (as in the surrogate, where Qd is an input),
+        # not bend the load forecast; PV/REF reactive physics residual stays exactly 0 either way
+        qg_flat = qg_phys + qd_flat.detach()
 
         gen_mask_flat = target_batch.mask_dict["PV"] | target_batch.mask_dict["REF"]
         qg_flat = torch.where(gen_mask_flat, qg_flat, torch.zeros_like(qg_flat))
@@ -602,9 +652,13 @@ class ST_GNN_heterogeneous(nn.Module):
             va_pred.unsqueeze(-1),      # Va  (learned)
         ], dim=-1)
 
+        return self._pack(final_forecast_bus, final_forecast_gen)
+
+    @staticmethod
+    def _pack(bus, gen):
         if torch._dynamo.is_compiling():
-            return final_forecast_bus, final_forecast_gen
+            return bus, gen
         return {
-            "bus": final_forecast_bus,  # [B, N_bus, n, 5]: [Pd, Qd, Qg, Vm, Va]
-            "gen": final_forecast_gen,  # [B, N_gen, n, 1]: [Pg]
+            "bus": bus,  # [B, N_bus, n, 5]: [Pd, Qd, Qg, Vm, Va]
+            "gen": gen,  # [B, N_gen, n, 1]: [Pg]
         }

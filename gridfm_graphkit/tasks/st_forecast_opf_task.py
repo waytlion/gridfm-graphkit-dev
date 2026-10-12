@@ -64,7 +64,6 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
         # Timing and sample counters
         self.train_time_total_s = 0.0
         self.train_samples = 0
-        self.total_test_sequences = 0
 
         # Canonical constraint-violation accumulators (per network)
         self._branch_flow = ComputeBranchFlow()
@@ -337,8 +336,6 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         from torch_scatter import scatter_add
-
-        self.total_test_sequences += int(batch["B"])
 
         # 1. Forward pass
         if self.forecast_mode == "autoregressive":
@@ -746,7 +743,9 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
             # ── Plot Forecast vs True for Bus 4 (index 3) ──
             import matplotlib.pyplot as plt
             bus_idx = 3  # "Bus 4" is a load bus in case14
-            if all_pred_bus.size(1) > bus_idx:
+            # Pd plots need a load forecast (Pd is NaN when model.predict_load=False)
+            has_load_forecast = getattr(self.args.model, "predict_load", True)
+            if has_load_forecast and all_pred_bus.size(1) > bus_idx:
                 horizon_step = 0  # Plot the first step of the forecast (1-step-ahead) across all test samples
                 pred_pd = all_pred_bus[:, bus_idx, horizon_step, 0].cpu().numpy()
                 tgt_pd = all_tgt_bus[:, bus_idx, horizon_step, 0].cpu().numpy()
@@ -769,7 +768,7 @@ class ST_ForecastOPFTask(OptimalPowerFlowTask):
 
             forecast_horizon = getattr(self.args.data, "forecast_horizon", 1)
 
-            if self._bus_type_pq is not None:
+            if has_load_forecast and self._bus_type_pq is not None:
                 generate_diagnostic_plots(
                     all_pred_bus, all_tgt_bus,
                     all_pred_gen, all_tgt_gen,

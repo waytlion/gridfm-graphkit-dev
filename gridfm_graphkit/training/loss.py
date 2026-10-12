@@ -366,9 +366,11 @@ class ST_ForecastBusMSE(BaseLoss):
     Weighted MSE for ST-GNN bus forecast output.
 
     Splits the 5-dim bus prediction [Pd, Qd, Qg, Vm, Va] into:
-        - load component (Pd):    index  [0:1], weighted by lambda_load
+        - load component (Pd):    index  [0:1], weighted by lambda_load (skipped if model.predict_load=False)
         - OPF component  (Vm, Va): indices [3:5], weighted by lambda_opf
-    Qd (index 1) and Qg (index 2) are excluded from the loss (derived quantities)
+        - Qg:                     index  [2:3], weighted by lambda_qg (default lambda_opf/2 = same
+                                  per-variable weight as Vm, Va, like the surrogate's MaskedBusMSE)
+    Qd (index 1) is never supervised (derived, or NaN when predict_load=False)
 
     Expected shapes:
         pred["bus"]:   [B, N_bus, n, 5]
@@ -379,29 +381,25 @@ class ST_ForecastBusMSE(BaseLoss):
         super().__init__()
         self.lambda_load = getattr(loss_args, "lambda_load", 0.5)
         self.lambda_opf = getattr(loss_args, "lambda_opf", 0.5)
+        self.lambda_qg = getattr(loss_args, "lambda_qg", 0.5 * self.lambda_opf)
+        self.predict_load = getattr(args.model, "predict_load", True)
         self.horizon_weighting = getattr(args.training, "horizon_weighting", "uniform")
 
     def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
 
         # Descale into stable Global P.U. space when window normalizer is used.
         # Use local scaled copies to avoid mutating `pred`/`target` in-place.
+        bus_pred, bus_target = pred["bus"], target["bus"]
         if mask is not None and mask.get("window_baseMVA") is not None:
             baseMVA = mask["window_baseMVA"].view(-1, 1, 1, 1).to(pred["bus"].device)
             scaled_baseMVA = baseMVA / mask["static_baseMVA"]
             # Simplest approach: clone bus tensors, scale indices 0:3 once, then slice.
-            scaled_bus_pred = pred["bus"].clone()
-            scaled_bus_target = target["bus"].clone()
-            scaled_bus_pred[..., 0:3] = scaled_bus_pred[..., 0:3] * scaled_baseMVA
-            scaled_bus_target[..., 0:3] = scaled_bus_target[..., 0:3] * scaled_baseMVA
-            pred_load = scaled_bus_pred[..., 0:1]
-            target_load = scaled_bus_target[..., 0:1]
-            pred_opf = scaled_bus_pred[..., 3:5]
-            target_opf = scaled_bus_target[..., 3:5]
-        else:
-            pred_load = pred["bus"][..., 0:1]
-            target_load = target["bus"][..., 0:1]
-            pred_opf = pred["bus"][..., 3:5]
-            target_opf = target["bus"][..., 3:5]
+            bus_pred = bus_pred.clone()
+            bus_target = bus_target.clone()
+            bus_pred[..., 0:3] = bus_pred[..., 0:3] * scaled_baseMVA
+            bus_target[..., 0:3] = bus_target[..., 0:3] * scaled_baseMVA
+        pred_load, target_load = bus_pred[..., 0:1], bus_target[..., 0:1]
+        pred_opf, target_opf = bus_pred[..., 3:5], bus_target[..., 3:5]
 
         def weighted_mse(pred_t, target_t):
             mse_per_t = ((pred_t - target_t) ** 2).mean(dim=(0, 1, 3))
@@ -416,15 +414,20 @@ class ST_ForecastBusMSE(BaseLoss):
             weights = weights / weight_sum
             return (mse_per_t * weights).sum()
 
-        loss_load = weighted_mse(pred_load, target_load) # [B, N_bus, n, 1]: Pd
         loss_opf = weighted_mse(pred_opf, target_opf)   # [B, N_bus, n, 2]: Vm, Va
-        total = self.lambda_load * loss_load + self.lambda_opf * loss_opf
+        total = self.lambda_opf * loss_opf
+        out = {"ST OPF MSE (Vm,Va)": loss_opf.detach()}
+        if self.predict_load:
+            loss_load = weighted_mse(pred_load, target_load) # [B, N_bus, n, 1]: Pd
+            total = total + self.lambda_load * loss_load
+            out["ST load MSE (Pd)"] = loss_load.detach()
+        # Qg is 0 at PQ buses in pred and target -> PQ rows contribute no error
+        loss_qg = weighted_mse(bus_pred[..., 2:3], bus_target[..., 2:3])
+        total = total + self.lambda_qg * loss_qg
+        out["ST Qg MSE"] = loss_qg.detach()
 
-        return {
-            "loss": total,
-            "ST load MSE (Pd)": loss_load.detach(),
-            "ST OPF MSE (Vm,Va)": loss_opf.detach(),
-        }
+        out["loss"] = total
+        return out
 
 
 @LOSS_REGISTRY.register("ST_ForecastGenMSE")
@@ -521,7 +524,8 @@ class ST_PhysicsForecastLoss(BaseLoss):
     Physics-informed loss for ST-GNN forecast output.
 
     - Flattens the multi-step temporal predictions to match static graph topologies.
-    - Injects the predicted load (Pd, Qd) into the physical bus features to evaluate a perfectly self-consistent physical state.
+    - Injects the predicted load (Pd, Qd) into the physical bus features to evaluate a perfectly self-consistent physical state
+      (TRUE load instead when model.predict_load=False -> realized residual).
     - Runs predictions through the physics layers (ComputeBranchFlow, 
       ComputeNodeInjection, ComputeNodeResiduals).
     -> Computes the active and reactive power balance residuals (delta_P, delta_Q).
@@ -552,6 +556,12 @@ class ST_PhysicsForecastLoss(BaseLoss):
         self.branch_flow_layer = ComputeBranchFlow()
         self.node_injection_layer = ComputeNodeInjection()
         self.node_residuals_layer = ComputeNodeResiduals()
+        # "squared": mean(res_P^2 + res_Q^2); "l2": mean ||[res_P, res_Q]||_2 per bus (= surrogate's form)
+        self.residual_form = getattr(loss_args, "residual_form", "squared")
+        if self.residual_form not in ("squared", "l2"):
+            raise ValueError(f"residual_form must be 'squared' or 'l2', got '{self.residual_form}'")
+        # no load forecast (dispatch-only) -> score the balance against the TRUE load (realized residual)
+        self.true_load = not getattr(args.model, "predict_load", True)
 
     def forward(self, pred, target, edge_index=None, edge_attr=None, mask=None, model=None):
         B = mask["B"]
@@ -564,11 +574,12 @@ class ST_PhysicsForecastLoss(BaseLoss):
         pred_gen_flat = pred["gen"].permute(0, 2, 1, 3).reshape(-1, 1) # [B, N_gen, n, 1] -> [B*n*N_gen, 1]
 
         # Var. Extraction
-        Pd_pred = pred_bus_flat[:, 0] 
-        Qd_pred = pred_bus_flat[:, 1]   
-        Vm_pred = pred_bus_flat[:, 3]   
-        Va_pred = pred_bus_flat[:, 4]   
+        Vm_pred = pred_bus_flat[:, 3]
+        Va_pred = pred_bus_flat[:, 4]
         Qg_pred = pred_bus_flat[:, 2]
+        # load the balance is scored against: own forecast (default) or true load (dispatch-only)
+        load_src = bus_x_orig[:, [PD_H, QD_H]] if self.true_load else pred_bus_flat[:, 0:2]
+        Pd_load, Qd_load = load_src[:, 0], load_src[:, 1]
 
         # add Pg from generators to buses
         edge_index_gb = edge_index[("gen", "connected_to", "bus")]
@@ -589,9 +600,9 @@ class ST_PhysicsForecastLoss(BaseLoss):
         if mask is not None and mask.get("window_baseMVA") is not None:
             scale = (mask["window_baseMVA"] / mask["static_baseMVA"]).repeat_interleave(
                 n * N_bus
-            ).to(Pd_pred.device)  # b_w/b_s per row
-            Pd_pred = Pd_pred * scale
-            Qd_pred = Qd_pred * scale
+            ).to(Pd_load.device)  # b_w/b_s per row
+            Pd_load = Pd_load * scale
+            Qd_load = Qd_load * scale
             Qg_pred = Qg_pred * scale
             Pg_bus_pred = Pg_bus_pred * scale
 
@@ -604,9 +615,9 @@ class ST_PhysicsForecastLoss(BaseLoss):
         # Clone to avoid modifying the original target tensor in-place
         bus_x_physics = bus_x_orig.clone() 
         
-        # Overwrite  ground truth load with PREDICTED load
-        bus_x_physics[:, PD_H] = Pd_pred
-        bus_x_physics[:, QD_H] = Qd_pred
+        # Overwrite ground truth load with the scored load (PREDICTED by default)
+        bus_x_physics[:, PD_H] = Pd_load
+        bus_x_physics[:, QD_H] = Qd_load
 
         # --- Physics pipeline ---
         edge_index_bb = edge_index[("bus", "connects", "bus")]
@@ -617,7 +628,10 @@ class ST_PhysicsForecastLoss(BaseLoss):
         res_P, res_Q = self.node_residuals_layer(P_in, Q_in, bus_data_pred, bus_x_physics)
         # residual is already base-consistent (power lifted to global p.u. above);
         # residuals are in global p.u., stable across samples.
-        loss = torch.mean(res_P ** 2 + res_Q ** 2)
+        if self.residual_form == "l2":
+            loss = torch.linalg.norm(torch.stack([res_P, res_Q], dim=-1), dim=-1).mean()
+        else:
+            loss = torch.mean(res_P ** 2 + res_Q ** 2)
 
         return {
             "loss": loss,
