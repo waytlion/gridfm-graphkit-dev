@@ -10,9 +10,6 @@ gridfm_graphkit.egg-info
 mlruns
 *.pt
 .DS_Store
-train.sh
 logs/
 build/
-examples/config/
-*.sh
 st_forecast_opf_metrics_explanation.md

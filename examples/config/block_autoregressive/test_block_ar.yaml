@@ -1,0 +1,74 @@
+task:
+  task_name: ST_ForecastOPF
+data:
+  baseMVA: 100
+  mask_value: 0.0
+  normalization: HeteroDataWindowMVANormalizer
+  networks:
+  - case14_ieee
+  scenarios:
+  - 100
+  test_ratio: 0.15
+  val_ratio: 0.15
+  workers: 4
+  preload: True
+  split_by_load_scenario_idx: true
+  temporal_split: true
+  # ST-GNN temporal parameters
+  temporal_window: 12       # W: lookback window (>= forecast_block so a full block rolls back)
+  forecast_horizon: 24      # n: number of target steps ahead
+  # Hybrid block-autoregressive rollout: predict forecast_block steps at once,
+  # feed the block back into the window, repeat n/forecast_block times.
+  forecast_mode: block_autoregressive
+  forecast_block: 6
+model:
+  type: ST_GNN_heterogeneous
+  # Spatial encoder (mirrors GNS_heterogeneous architecture)
+  attention_head: 2
+  temporal_decoder_heads: 2
+  alpha_init_res: 0.2
+  edge_dim: 10
+  hidden_size: 4
+  input_bus_dim: 15
+  input_gen_dim: 6
+  output_bus_dim: 5         # [Pd, Qd, Qg, Vm, Va]
+  output_gen_dim: 1         # [Pg]
+  num_layers: 3
+  dropout: 0.1
+  # TCN temporal encoder
+  tcn_kernel_size: 3
+  # Late fusion
+  use_exogenous: false
+  forecast_decoder_mode: per_horizon
+  mlp_hidden_dim: 1024
+  mlp_num_layers: 1
+optimizer:
+  beta1: 0.9
+  beta2: 0.999
+  learning_rate: 0.0005
+  lr_decay: 0.7
+  lr_patience: 5
+training:
+  batch_size: 32
+  epochs: 10
+  losses:
+    - ST_ForecastBusMSE
+    - ST_ForecastGenMSE
+    - ST_PhysicsForecastLoss
+  loss_weights:
+    - 1.0
+    - 0.1
+    - 0.1
+  loss_args:
+    - lambda_load: 0.8
+      lambda_opf: 0.2
+    - {}
+    - {}
+  accelerator: auto
+  devices: auto
+  strategy: auto
+seed: 0
+verbose: true
+callbacks:
+  patience: 100
+  tol: 0
