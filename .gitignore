@@ -13,3 +13,5 @@ mlruns
 logs/
 build/
 st_forecast_opf_metrics_explanation.md
+# local launch scripts (upstream removed scripts/)
+/*.sh

@@ -39,8 +39,8 @@ examples/config/               GITIGNORED. Thesis runs: final_thesis_runs/{base,
 ## Run & validate (capella, sbatch)
 ```bash
 sbatch test_2min.sh                                    # 1-GPU E2E smoke (edit CONFIG inside)
-sbatch --time=10:00:00 --export=ALL,SEED=0,CONFIG=examples/config/final_thesis_runs/base_case118_h24.yaml,EXP_NAME=final_thesis_runs,RUN_NAME=base_e2e_case118_h24_s0 train.sh   # E2E, 4-GPU DDP
-sbatch train_surrogate.sh                              # surrogate, 3 seeds (job array)
+sbatch --time=10:00:00 --export=ALL,SEED=0,CONFIG=examples/config/final_thesis_runs/base_case118_h24.yaml,EXP_NAME=final_e2e_qgmse,RUN_NAME=base_e2e_case118_h24_s0 train.sh   # E2E, 4-GPU DDP; final base E2E exp (findings §3)
+sbatch --export=ALL,CASE=case118_ieee,SEED=1 train_surrogate.sh   # surrogate, one case × seed per job
 sbatch evaluate.sh                                     # test-only eval from checkpoint
 pytest tests/                                          # unit tests
 ```

@@ -2,6 +2,7 @@
 
 Measured results, retractions, and implementation rationale. Dated; newest facts win.
 RETRACTED entries stay so they are not re-proposed. Cross-arm/aggregation findings: `~/Thesis_Repo/docs/findings.md`.
+E2E-vs-2-step mechanism (Pg ≈ f(D), curvature Δ, total vs allocation error, correlated load errors): its §9 summary.
 
 ---
 
@@ -25,12 +26,14 @@ RETRACTED entries stay so they are not re-proposed. Cross-arm/aggregation findin
   surrogate, where Qd is an input).
 - Loss supervises Pd + Vm, Va + derived Qg (`lambda_qg`, default lambda_opf/2 = surrogate parity, since
   **2026-10-08**); excludes Qd. Runs before 2026-10-08 (all `final_thesis_runs` E2E) had NO Qg MSE.
+  RETRACTED (2026-10-12): "surrogate parity" / "as in the surrogate": the surrogate never trains on Qg (§3).
 - History (2026-09-21): a July note said E2E predicted Qg as a free head; by 2026-09-21 both arms derived it. Qg RMSE
   numbers from the predict-Qg era (surrogate PQ 0/PV≈47/REF≈110 vs E2E PQ≈0.64/PV≈3/REF≈5) do not describe current runs.
 
 ### Dispatch-only E2E (opt-in `model.predict_load: false`)
 - No Pd forecast (Pd/Qd output cols NaN); head predicts [Qg, Vm, Va] (Qg 0 at PQ); physics vs TRUE load.
 - Only `direct` forecast_mode; no `predict_load_delta`.
+- Verdict (2026-10-12): no gain over default + derived-Qg MSE (same gap/Res P/Qg MAE, worse Res Q 1.18 vs 0.76) — §3.
 
 ### E2E forecast modes (`data.forecast_mode`)
 - `direct` (default): whole horizon in one forward. `autoregressive`: 1 step, rolled back into the window.
@@ -102,11 +105,67 @@ RETRACTED entries stay so they are not re-proposed. Cross-arm/aggregation findin
   over seeds. Opt gap/Pg/Vm/Va/Res P unchanged (dropping Pd cost nothing). Thermal viol NOT robust (dispatch
   24k/86k/55k vs base 83k). → Report reactive residual at PQ buses + Qg error/violations.
   - Without Qg MSE (dispatch-only, n=1): Qg MAE 5.1, viol mean 1.2 → the Qg MSE is needed.
+- **Surrogate never trains on Qg: MaskedBusMSE task check is always False** (2026-10-12, verified from code):
+  - `training/loss.py:119` `self.args.task in ("OptimalPowerFlow", "OptimalPowerFlowTwoStep")` compares a
+    `NestedNamespace` (argparse.Namespace subclass, no `__eq__`) with strings → always False → only Vm, Va supervised;
+    the OPF mask's Qg at PV/REF (`masking.py:73,77`) is never used. Fix: `self.args.task.task_name`.
+    FIXED in working tree 2026-10-14 (uncommitted); existing surrogate checkpoints were trained WITHOUT it (not retrained).
+    2026-10-17: retrain s0 per case submitted; old `surrogate_<net>_s0` train runs moved to
+    `<data>/mlruns_archive/surrogate_pre_qgfix/<exp_id>/` (train_surrogate.sh skips if a checkpoint exists).
+    2026-10-17 RESULT (s0 retrain, test eval, xgb; old → new): Qg MAE case14 h6 1.43 → 0.24, case118 h1 13.1 → 0.63,
+    case500 h1 14.1 → 1.64 MVAr; qg viol. rate 0.20 → 0.15 / 0.24 → 0.10 / 0.43 → 0.20. Cost: Vm MAE +7 / +12 / +15 %;
+    case500 h1 also worse gap 2.74 → 2.92 % and Pg RMSE 8.76 → 9.63 MW (case118 better: 1.46 → 1.28 %, 3.37 → 2.80).
+    n = 1 seed → the case500 Pg/gap regression may be seed noise. Never-built eval sets (pre-existing gap):
+    case118 sarima h1/h24, case500 sarima/snaive/true h24.
+  - With derived Qg (reactive residual ≡ 0 at PV/REF) the surrogate gets NO Qg signal at gen buses.
+  - Likely cause (HYPOTHESIS until retrained) of the forecaster-independent surrogate Qg violations in the ex-post
+    AC-PF (case118 ~88 MVAr, case500 ~547 MVAr; `~/Thesis_Repo/docs/findings.md`).
+  - Same bug upstream (gridfm/gridfm-graphkit `loss.py:143`).
+- **Upstream review** (2026-10-12; merge-base f759ced, upstream/main 8a8defb): only reactive change is
+  `QgViolationPenalty` (L1 hinge on bus Qg limits, weight 0.001 in `HGNS_OPF_*` configs). Qg still derived, Vm still
+  bounded at all buses, no thermal/voltage penalty, architecture + state_dict unchanged. Full merge: 7 substantive
+  conflicts + config versioning + 2 silent API breaks (`forward(batch)`, 7-arg MixedLoss) → not adopted.
 - **l2 vs squared physics, same seed s1** (2026-10-10): Res P 2.22→1.92, Res Q 0.72→0.57 (PQ −30%), ~2× baseline seed
   range; Pd MAE/opt gap unchanged; Vm/Va MAE +11-16% worse. n=1, promising. The l2 term is ~10× larger at the same
   weight → form and effective weight changed together (a matched-weight squared arm would separate them).
   RETRACTED (2026-10-10): "l2 improves Pd" and "dispatch-only thermal −70%" were seed artifacts.
+- **l2 vs squared, WITH Qg MSE** (2026-10-15, case118 h24 base, 3 squared seeds vs 2 l2 seeds; `exp e2e_derived_qgmse`
+  vs `e2e_qgmse_l2`): same direction as above, now WITH a Pd cost. Res P 2.32→2.03 MW, Res Q 0.78→0.63 MVAr, thermal
+  viol ~73k→~35k; opt gap unchanged (4.31 vs 4.33%); Pd MAE +11% (1.30→1.44), Vm MAE +29%, Va MAE +15%. n=2 for l2 —
+  3rd base seed (4408561) + 3 tiny seeds (4408559/60/62) still pending, won't change this (opt gap never moved).
+  Not adopted as default: optimality gap is the thesis metric and doesn't improve; the Vm/Pd cost is real and this
+  is the E2E's forecast arm. l2 is reported as an ablation (feasibility/residual tradeoff), not shipped.
+- **Qg MSE does not move Pg accuracy** (2026-10-15, base case118 h24, no-QgMSE s0/s1 vs QgMSE s0-2): Generator Pg MAE
+  1.70→1.69 MW, RMSE 8.90→8.91, opt gap 4.32→4.31% — all within seed noise. Qg MSE's gain is confined to Qg/Vm;
+  it does not act through Pg or the dispatch cost.
+- **DECISION (2026-10-15, mine): final E2E config = Qg MSE ON (code default since 2026-10-08), squared physics
+  (code default), dispatch-only OFF.** Rationale: Qg MSE is a free win (Qg MAE 9.8→0.77, Vm MAE −13%, nothing else
+  moves); l2 is a real tradeoff against forecast/voltage accuracy for a metric (residual) that isn't the headline
+  one, so left as an ablation; dispatch-only has no advantage once Qg MSE exists in the default model (§1).
+  - **Qg MSE is NOT a duplicate of the Vm/Va MSE**: derived Qg = Q_in(Vm,Va) − q_shunt + Qd is sensitive to small
+    Vm *differences* between neighboring buses (scaled by line susceptance), which the per-bus Vm MSE barely
+    penalizes and which is exactly 0 at gen buses in the physics residual (see entry above). Evidence it's new
+    signal, not redundant: adding it changed Qg MAE by 13× while improving (not just not-hurting) Vm MAE.
+  - **Final base E2E runs live in MLflow experiment `final_e2e_qgmse` (id 764191360493391788, created 2026-10-17)**.
+    Moved there (dir mv + meta.yaml experiment_id/artifact_uri rewritten, verified via MlflowClient):
+    `base_e2e_case118_h24_s{0,1,2}` (from `e2e_derived_qgmse`) and `base_e2e_case500_goc_h{1,6,24}_s0`
+    (from `final_thesis_runs`). Retrains go there too: `EXP_NAME=final_e2e_qgmse`, same run names.
+  - **Still to retrain (base only, current code default)**: case14 h1/h6/h24 s0; case118 h1 s0-s2, h6 s0.
+  - **Tiny is NOT retrained (decision 2026-10-17)**: tiny stays the pre-Qg-MSE generation in `final_thesis_runs`
+    (state as caveat: tiny vs base differ in Qg MSE). Tiny Qg-MSE runs in `e2e_derived_qgmse` stay ablation-only.
+  - Before aggregating: archive the superseded no-Qg-MSE BASE runs (`final_thesis_runs` + `state-dump` copies of
+    `base_e2e_case{14,118}_*`) to `<data>/mlruns_archive/`, else same-named runs count as extra seeds.
 - Seed noise (base, s0 vs s1): gap ±1%, Res P 7%, Res Q 10%, Pd MAE 23%.
+- **E2E derived-Qg MSE (default since 2026-10-08) is a clear win** (2026-10-12, case118 h24, s0+s1 vs base s0+s1;
+  exp `e2e_derived_qgmse` = TWO exp IDs, concurrent-creation race): Qg MAE 9.8→0.75 MVAr, Qg viol mean 6.0→0.07,
+  max ~99→~8.5; Res Q unchanged 0.76; Res P 2.31→2.28, gap 4.32→4.36, Pd MAE unchanged (Qd detached); Vm MAE −13%.
+  Derived Qg reaches predicted-Qg accuracy while keeping gen-bus balance by construction. Mechanism: the Qg MSE
+  penalizes Vm *differences* around gen buses, which the per-bus Vm MSE barely sees.
+  - Consistency: case500 retrains 4401397-9 (2026-10-10, live repo) INCLUDE Qg MSE (logged `ST Qg MSE`);
+    case14/case118 `final_thesis_runs` E2E do NOT.
+- **l2 physics consistently trades voltage accuracy for residual** (2026-10-12): dispatch-only + l2 (s0+s1) vs
+  dispatch-only (s0-s2): Res P 2.24→1.81, Res Q 1.18→0.74, Vm MAE 0.0071→0.011 (+55%); gap/Qg/Va unchanged. Same
+  direction as default-model l2 s1 (Res P −14%, Res Q −20%, Vm +16%). Default + Qg MSE + l2: untested.
 - **Vm bounding destroys the violation signal at PQ buses**: correct at PV/REF (setpoints), wrong at PQ (voltage is a
   consequence). Fix (NOT implemented): bound only where `mask_dict["PV"] | mask_dict["REF"]`.
 - Tradeoff framing: predict Qg = best Qg accuracy + box enforceable, worst balance residual; derive = residual 0 at gen
@@ -148,11 +207,33 @@ RETRACTED entries stay so they are not re-proposed. Cross-arm/aggregation findin
 
 ## 5. Settled / low-leverage — don't re-litigate
 
-- **W→n temporal decoder axis**: matched comparisons show terminal-state broadcast ≈ `Linear(W->n)` (0.9-2% apart,
-  within spread; e.g. 0.01473 vs 0.01460 at hs12, 0.01446 vs 0.01416 at hs48). TCN RF (61) > W (48).
-  `Linear(W->n)` is 2,352 params of ~28-46M. Caveats: only 15/356 runs log `model.temporal_decoder` (rest
-  date-inferred); `seasonal_skip` = 1 truncated run (177/200, no matched control) → not a clean negative;
-  explicit `temporal_decoder="terminal"` has 0 runs.
+- **W→n temporal decoder axis — `Linear(W->n)` WINS; keep it** (direct 3-way test 2026-09-22, tiny case118 h24,
+  per_horizon + harmonic + global MVA, configs identical except `temporal_decoder`):
+
+  | arm | MAE Pd | Va MAE | Vm MAE | Res P | gap % |
+  |---|---|---|---|---|---|
+  | linear (4 baseline seeds) | **1.200-1.364** | 0.363-0.539 | 0.0065-0.0071 | 1.98-2.73 | 4.10-5.11 |
+  | cross_attention + kv PE | 1.532 | 0.762 | 0.0077 | 2.85 | 5.01 |
+  | terminal | 1.608 | 0.784 | 0.0082 | 3.07 | 5.21 |
+
+  Both variants are worse than ALL four linear seeds on MAE Pd / Va / Vm / Res P, margins > seed spread. Ordering
+  linear < cross_attn < terminal is monotone in how much of the window reaches the heads → the W axis carries real
+  signal. SUPERSEDES the earlier val-loss-based parity claim (terminal ≈ linear, 0.01473 vs 0.01460 at hs12) — that
+  rested on date-inferred architecture labels and val loss alone.
+- **A/B on MAE Pd, not optimality gap, with ≥2 seeds**: linear's seed spread is 13% on MAE Pd vs 25% (1.01 pp) on
+  gap; same-seed rerun noise alone is 0.10 pp gap, so ~0.2 pp decoder effects are unreadable on gap.
+- **`CrossAttentionTimeDecoder` had no positional encoding on its keys/values** → provably permutation-invariant over
+  the W lags (measured: 0.000000 output change under lag shuffling with the terminal-state context held fixed).
+  Fixed by `LayerNorm` + `SinusoidalPositionalEncoding` on `kv` (the TCN ends on `relu(out+x)` with no output norm,
+  so unnormalized activations would swamp a unit-scale PE). The pre-fix "cross-attention loses to linear" verdict was
+  void; retested with the fix it still loses → droppable (1.5M params, ~5% of base).
+- `temporal_decoder: terminal` implemented (raises if `shared` heads + `step_embed_dim=0`, else all n steps get
+  identical input AND weights). Base arms of both variants TIMEOUT at 5:10 (~121-126 epochs, no test pass) —
+  **base needs `--time=10:00:00`** at ~2.9 min/epoch; `epochs: 200` has never been reached at base size.
+- `seasonal_skip` = 1 truncated run (177/200, no matched control) → not a clean negative, still untested.
+- UNTESTED: depthwise `L[n,W,D]` (per-embedding-dim lag profile) vs the shared `L[n,W]`. Partially probed by
+  cross-attention's multi-head readout, which gives H distinct lag profiles over dim groups (3 at tiny, 6 at base)
+  and did not help — weak evidence against, but confounded (data-dependent weights + learned queries + 1.5M params).
 - **More training data does not help** (matched `train_window`): tiny 26280→3.799 vs None→3.839; base 26280→3.845 vs
   None→3.934.
 - **Window normalizer is not better than global MVA**: the ~0.9pp advantage was a dataset artifact; like-for-like run
@@ -162,6 +243,12 @@ RETRACTED entries stay so they are not re-proposed. Cross-arm/aggregation findin
 ---
 
 ## 6. Data / MLflow archive integrity
+
+- **Never put non-experiment dirs inside `mlruns/`** (2026-10-12): MLflow's file store treats every dir as an
+  experiment; `_archiv_case500_stale/` made `get_experiment_by_name` raise "Invalid experiment ID" → every training
+  job's MLFlowLogger would crash. Archive moved to `<data>/mlruns_archive/case500_stale/`.
+- **Concurrent jobs can create duplicate experiments with the same name** (2026-10-12: `e2e_derived_qgmse` = 2 IDs).
+  Pre-create a new experiment before submitting parallel seeds; analysis lookups must search all IDs per name.
 
 - **Contaminated runs**: `getattr(args.model, "temporal_decoder", ...)` defaulted to `cross_attention` for ~33.5 h
   (2026-05-12 08:54 → 05-13 18:23, commits 5296a68 → 876fe24). The three `*_noAttn_noRes` runs in experiment
