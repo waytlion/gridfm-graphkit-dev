@@ -263,6 +263,7 @@ E2E-vs-2-step mechanism (Pg ≈ f(D), curvature Δ, total vs allocation error, c
   Every E2E case500 metric (all horizons/seeds) trained+tested on old data (3300 vs ~3931 test windows, misaligned
   calendar features). case14/case118 OK. New runs: `base_e2e_case500_goc_h{H}_s0`; archive the old
   `base_e2e_case500_h{H}_s0` before aggregating.
+  RESOLVED 2026-10-12 for base (retrained, old runs archived). STILL STALE: tiny/large/400-epoch case500 runs (plot_tiny_vs_base).
 - **Surrogate normalizer key mismatch** (2026-08-18): eval restores `normalizer_stats.pt` only if
   `network in saved_stats` and `fit_on_train`; else it refits on the (empty, `eval_full_as_test`) train split →
   `np.percentile([])` IndexError. Root cause was `train_surrogate.sh` training every case on case118 (CASE only
