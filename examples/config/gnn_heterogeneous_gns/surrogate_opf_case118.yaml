@@ -8,8 +8,8 @@ data:
   - case118_ieee
   scenarios:
   - 26280
-  test_ratio: 0.1
-  val_ratio: 0.1
+  test_ratio: 0.15  # = forecaster/E2E split: train 0-18395, val 18396-22337, test 22338-26279 (thesis test period)
+  val_ratio: 0.15
   workers: 16
   split_by_load_scenario_idx: true
   temporal_split: true
